@@ -69,6 +69,7 @@ def test_terminal_shows_evidence_and_escapes_control_characters() -> None:
     output = render_terminal(result)
 
     assert "Parser: WARNING" in output
+    assert "File: models/<script>alert(1).gguf" in output
     assert "Metadata (1):" in output and "Tensors (1):" in output
     assert "[ERROR] GG101" in output
     assert "Evidence:" in output and "Remediation:" in output

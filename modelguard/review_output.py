@@ -109,8 +109,8 @@ def report_dict(result: ScanResult) -> dict[str, object]:
 
 
 def _display(value: object) -> str:
-    if isinstance(value, str):
-        return value
+    if isinstance(value, (str, Path)):
+        return str(value)
     return json.dumps(_jsonable(value), ensure_ascii=False, sort_keys=True)
 
 
