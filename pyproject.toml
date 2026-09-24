@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modelguard"
+version = "0.1.0"
+description = "Static GGUF and safetensors structural inspection"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+modelguard = "modelguard.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["modelguard*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
