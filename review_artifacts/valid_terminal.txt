@@ -1,0 +1,25 @@
+ModelGuard review
+=================
+File: samples/valid_model.safetensors
+Format: SAFETENSORS
+Size: 199 bytes
+Parser: OK (0 errors, 0 warnings)
+Findings: 0
+Header length: 179
+Data start: 187
+Declared tensors: 2
+Declared metadata: 2
+
+Metadata (2):
+  source [str]: synthetic
+  purpose [str]: first review
+
+Tensors (2):
+  weight: dtype=F32, shape=[2], offsets=[0, 8]
+  bias: dtype=F16, shape=[2], offsets=[8, 12]
+
+Findings (0):
+  No structural violations detected.
+
+JSON report: review_artifacts/valid_safetensors.json
+HTML report: review_artifacts/valid_safetensors.html

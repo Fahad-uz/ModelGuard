@@ -1,0 +1,71 @@
+{
+  "file": {
+    "path": "samples/valid_model.safetensors",
+    "name": "valid_model.safetensors",
+    "size_bytes": 199,
+    "format": "SAFETENSORS"
+  },
+  "parser_status": "OK",
+  "counts": {
+    "metadata": 2,
+    "tensors": 2,
+    "findings": 0,
+    "parser_warnings": 0,
+    "parser_errors": 0,
+    "by_severity": {
+      "CRITICAL": 0,
+      "ERROR": 0,
+      "WARNING": 0,
+      "INFO": 0
+    }
+  },
+  "parsed": {
+    "format": "SAFETENSORS",
+    "file_size": 199,
+    "format_version": null,
+    "header_length": 179,
+    "data_start": 187,
+    "declared_tensor_count": 2,
+    "declared_metadata_count": 2,
+    "metadata": {
+      "source": "synthetic",
+      "purpose": "first review"
+    },
+    "metadata_types": {
+      "source": "str",
+      "purpose": "str"
+    },
+    "tensors": [
+      {
+        "name": "weight",
+        "dtype": "F32",
+        "shape": [
+          2
+        ],
+        "data_offsets": [
+          0,
+          8
+        ],
+        "ggml_type": null,
+        "descriptor_offset": null
+      },
+      {
+        "name": "bias",
+        "dtype": "F16",
+        "shape": [
+          2
+        ],
+        "data_offsets": [
+          8,
+          12
+        ],
+        "ggml_type": null,
+        "descriptor_offset": null
+      }
+    ],
+    "parser_warnings": [],
+    "parser_errors": [],
+    "extra": {}
+  },
+  "findings": []
+}

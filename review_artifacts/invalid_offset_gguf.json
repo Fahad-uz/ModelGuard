@@ -1,0 +1,86 @@
+{
+  "file": {
+    "path": "samples/invalid_offset.gguf",
+    "name": "invalid_offset.gguf",
+    "size_bytes": 168,
+    "format": "GGUF"
+  },
+  "parser_status": "OK",
+  "counts": {
+    "metadata": 2,
+    "tensors": 1,
+    "findings": 2,
+    "parser_warnings": 0,
+    "parser_errors": 0,
+    "by_severity": {
+      "CRITICAL": 0,
+      "ERROR": 1,
+      "WARNING": 1,
+      "INFO": 0
+    }
+  },
+  "parsed": {
+    "format": "GGUF",
+    "file_size": 168,
+    "format_version": 3,
+    "header_length": 139,
+    "data_start": 160,
+    "declared_tensor_count": 1,
+    "declared_metadata_count": 2,
+    "metadata": {
+      "general.architecture": "demo",
+      "general.alignment": 32
+    },
+    "metadata_types": {
+      "general.architecture": "string",
+      "general.alignment": "uint32"
+    },
+    "tensors": [
+      {
+        "name": "weight",
+        "dtype": "F32",
+        "shape": [
+          2
+        ],
+        "data_offsets": [
+          32,
+          40
+        ],
+        "ggml_type": 0,
+        "descriptor_offset": 101
+      }
+    ],
+    "parser_warnings": [],
+    "parser_errors": [],
+    "extra": {
+      "endian": "little",
+      "alignment": 32
+    }
+  },
+  "findings": [
+    {
+      "id": "GG118",
+      "severity": "ERROR",
+      "category": "bounds",
+      "message": "Tensor data extends beyond the file",
+      "field": "tensor.weight",
+      "evidence": {
+        "end": 40,
+        "available": 8
+      },
+      "remediation": null
+    },
+    {
+      "id": "GG120",
+      "severity": "WARNING",
+      "category": "layout",
+      "message": "Tensor offset differs from the packed GGUF layout",
+      "field": "tensor.weight",
+      "evidence": {
+        "offset": 32,
+        "expected": 0
+      },
+      "remediation": null
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+ModelGuard review
+=================
+File: samples/invalid_offset.gguf
+Format: GGUF
+Size: 168 bytes
+Parser: OK (0 errors, 0 warnings)
+Findings: 2
+Format version: 3
+Header length: 139
+Data start: 160
+Declared tensors: 1
+Declared metadata: 2
+
+Metadata (2):
+  general.architecture [string]: demo
+  general.alignment [uint32]: 32
+
+Tensors (1):
+  weight: dtype=F32, shape=[2], offsets=[32, 40], ggml_type=0, descriptor_offset=101
+
+Findings (2):
+  [ERROR] GG118 (bounds): Tensor data extends beyond the file
+    Field: tensor.weight
+    Evidence: {\"available\": 8, \"end\": 40}
+  [WARNING] GG120 (layout): Tensor offset differs from the packed GGUF layout
+    Field: tensor.weight
+    Evidence: {\"expected\": 0, \"offset\": 32}
+
+JSON report: review_artifacts/invalid_offset_gguf.json
+HTML report: review_artifacts/invalid_offset_gguf.html
