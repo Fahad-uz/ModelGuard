@@ -43,4 +43,13 @@ def scan_file(path: str | Path) -> ScanResult:
         findings = [Finding(issue.code, "ERROR", "parser", issue.message, issue.field, issue.evidence)
                     for issue in parsed.parser_errors]
         findings.append(Finding("MG998", "ERROR", "analyzer", f"Analysis failed safely: {type(exc).__name__}: {exc}"))
+
+    try:
+        from modelguard.analyzers.template_analyzer import TemplateAnalyzer
+        findings.extend(TemplateAnalyzer().analyze(parsed))
+    except Exception as exc:
+        logger.exception("Unexpected template analysis failure while scanning %s", model_path)
+        findings.append(Finding("CT999", "ERROR", "template_analyzer", f"Template analysis failed safely: {type(exc).__name__}: {exc}"))
+
     return ScanResult(parsed, findings)
+

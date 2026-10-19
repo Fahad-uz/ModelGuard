@@ -342,3 +342,26 @@ def test_custom_template_retained_for_review() -> None:
     assert len(ct132) == 1
     assert ct132[0].severity == "INFO"
     assert ct132[0].category == "template_reference"
+
+
+def test_scan_file_integration(tmp_path: Path) -> None:
+    from modelguard.scan import scan_file
+    import json
+    import struct
+
+    # Create a minimal safetensors file containing a hostile template
+    header = {
+        "__metadata__": {
+            "chat_template": "{{ ().__class__.__bases__[0].__subclasses__() }}"
+        },
+        "weight": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}
+    }
+    encoded = json.dumps(header).encode("utf-8")
+    content = struct.pack("<Q", len(encoded)) + encoded + struct.pack("<f", 1.0)
+    test_file = tmp_path / "hostile.safetensors"
+    test_file.write_bytes(content)
+
+    result = scan_file(test_file)
+    assert any(f.id == "CT101" for f in result.findings)
+    assert result.parsed.extra.get("chat_templates")
+
