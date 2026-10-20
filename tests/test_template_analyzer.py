@@ -111,6 +111,35 @@ def test_extract_empty_when_no_templates() -> None:
     assert extracted == []
 
 
+def test_extract_from_sibling_chat_template_json(tmp_path: Path) -> None:
+    cfg = tmp_path / "chat_template.json"
+    tmpl = "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+    cfg.write_text(json.dumps({"chat_template": tmpl}), encoding="utf-8")
+
+    model_file = tmp_path / "model.safetensors"
+    model_file.write_bytes(b"")
+    model = ParsedModel(path=model_file, format="SAFETENSORS", file_size=0, metadata={})
+
+    extracted = TemplateExtractor().extract(model)
+    assert len(extracted) == 1
+    assert extracted[0].source == "chat_template.json#chat_template"
+    assert extracted[0].content == tmpl
+
+
+def test_benign_canonical_template_produces_no_errors() -> None:
+    """A clean canonical template should produce zero ERROR or CRITICAL findings."""
+    from modelguard.analyzers.trusted_templates import CANONICAL_REFERENCES
+
+    chatml = CANONICAL_REFERENCES["chatml"].canonical_source
+    model = _parsed({
+        "tokenizer.chat_template": chatml,
+        "general.architecture": "qwen2",
+    })
+    findings = TemplateAnalyzer().analyze(model)
+    severe = [f for f in findings if f.severity in ("ERROR", "CRITICAL")]
+    assert severe == [], f"Unexpected severe findings on clean template: {severe}"
+
+
 # ---------------------------------------------------------------------------
 # Code-Risk Tests (CT101, CT102, CT104, CT105)
 # Slide 9: "keeps code-risk and prompt-content findings separate"
@@ -277,6 +306,21 @@ def test_detect_empty_template() -> None:
     ct123 = [f for f in findings if f.id == "CT123"]
     assert len(ct123) == 1
     assert ct123[0].id == "CT123"
+
+
+def test_detect_excessive_ast_nesting_depth() -> None:
+    # Build a template with nesting deeper than MAX_TEMPLATE_AST_DEPTH
+    from modelguard.analyzers.template_analyzer import MAX_TEMPLATE_AST_DEPTH
+
+    depth = MAX_TEMPLATE_AST_DEPTH + 10
+    nested = "{% if true %}" * depth + "x" + "{% endif %}" * depth
+    model = _parsed({"tokenizer.chat_template": nested})
+    findings = TemplateAnalyzer().analyze(model)
+
+    ct122 = [f for f in findings if f.id == "CT122"]
+    assert len(ct122) == 1
+    assert ct122[0].severity == "WARNING"
+    assert ct122[0].category == "template_syntax"
 
 
 # ---------------------------------------------------------------------------

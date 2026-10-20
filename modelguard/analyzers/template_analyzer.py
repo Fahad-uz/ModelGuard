@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +25,8 @@ from modelguard.models.results import Finding, ParsedModel, Severity
 logger = logging.getLogger(__name__)
 
 # Conservative template size and recursion ceilings (Slide 8, 16)
-MAX_TEMPLATE_BYTES = getattr(limits, "MAX_TEMPLATE_BYTES", 256 * 1024)
-MAX_TEMPLATE_AST_DEPTH = getattr(limits, "MAX_TEMPLATE_AST_DEPTH", 50)
+MAX_TEMPLATE_BYTES = limits.MAX_TEMPLATE_BYTES
+MAX_TEMPLATE_AST_DEPTH = limits.MAX_TEMPLATE_AST_DEPTH
 
 
 # Backdoor phrases and suspicious prompt overrides
@@ -173,6 +173,9 @@ class TemplateAnalyzer:
 
     def __init__(self) -> None:
         self.extractor = TemplateExtractor()
+        self._jinja_env: Any = None
+        if HAVE_JINJA2:
+            self._jinja_env = jinja2.Environment()
 
     def analyze(self, model: ParsedModel, *, custom_template: str | None = None) -> list[Finding]:
         findings: list[Finding] = []
@@ -233,10 +236,9 @@ class TemplateAnalyzer:
 
         # 2. Parse AST safely without rendering
         ast: Any = None
-        if HAVE_JINJA2:
+        if self._jinja_env is not None:
             try:
-                env = jinja2.Environment()
-                ast = env.parse(content)
+                ast = self._jinja_env.parse(content)
             except jinja2.TemplateSyntaxError as exc:
                 findings.append(_finding(
                     "CT120", "ERROR", "template_syntax",
@@ -442,12 +444,16 @@ class TemplateAnalyzer:
 
         return findings
 
-    def _max_ast_depth(self, node: Any, current_depth: int = 1) -> int:
-        if not hasattr(node, "iter_child_nodes"):
-            return current_depth
-        max_d = current_depth
-        for child in node.iter_child_nodes():
-            d = self._max_ast_depth(child, current_depth + 1)
-            if d > max_d:
-                max_d = d
-        return max_d
+    @staticmethod
+    def _max_ast_depth(root: Any) -> int:
+        """Compute maximum AST nesting depth iteratively to avoid RecursionError."""
+        max_depth = 0
+        stack: list[tuple[Any, int]] = [(root, 1)]
+        while stack:
+            node, depth = stack.pop()
+            if depth > max_depth:
+                max_depth = depth
+            if hasattr(node, "iter_child_nodes"):
+                for child in node.iter_child_nodes():
+                    stack.append((child, depth + 1))
+        return max_depth

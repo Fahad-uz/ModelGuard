@@ -125,6 +125,17 @@ def _normalize(template_text: str) -> str:
     return re.sub(r"\s+", " ", no_comments).strip()
 
 
+# Pre-compute normalized forms of canonical sources (they are constants).
+_NORMALIZED_REFS: dict[str, str] = {
+    key: _normalize(ref.canonical_source)
+    for key, ref in CANONICAL_REFERENCES.items()
+}
+
+# Length-ratio threshold: if the input is more than this factor longer/shorter
+# than a reference, skip the expensive SequenceMatcher comparison entirely.
+_LENGTH_RATIO_CUTOFF = 5.0
+
+
 @dataclass(slots=True)
 class ComparisonResult:
     matched_reference: CanonicalReference | None = None
@@ -141,6 +152,7 @@ def compare_template_with_references(
 ) -> ComparisonResult:
     """Compare a template against pinned canonical references."""
     norm_input = _normalize(template_text)
+    input_len = len(norm_input)
     arch = (declared_architecture or "").lower().strip()
 
     valid_refs_for_arch = [
@@ -152,8 +164,17 @@ def compare_template_with_references(
     best_match: CanonicalReference | None = None
     best_score: float = 0.0
 
-    for ref in CANONICAL_REFERENCES.values():
-        norm_ref = _normalize(ref.canonical_source)
+    for key, ref in CANONICAL_REFERENCES.items():
+        norm_ref = _NORMALIZED_REFS[key]
+        ref_len = len(norm_ref)
+
+        # Fast length-ratio pre-filter: skip obviously dissimilar templates
+        # to avoid O(n²) SequenceMatcher on very large inputs.
+        if ref_len and input_len:
+            length_ratio = max(input_len, ref_len) / min(input_len, ref_len)
+            if length_ratio > _LENGTH_RATIO_CUTOFF:
+                continue
+
         # Check delimiter presence bonus
         has_all_delimiters = all(delim in template_text for delim in ref.key_delimiters)
         ratio = difflib.SequenceMatcher(None, norm_input, norm_ref).ratio()

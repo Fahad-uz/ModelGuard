@@ -22,3 +22,20 @@ def test_invalid_fixtures_produce_controlled_findings() -> None:
         report = scan_file(SAMPLES / filename)
         assert report.findings, filename
         assert any(item.severity in ("ERROR", "CRITICAL") for item in report.findings), filename
+
+
+def test_malicious_chat_template_fixtures_flagged() -> None:
+    for filename in ("malicious_chat_template.gguf", "malicious_exploit.gguf"):
+        report = scan_file(SAMPLES / filename)
+        assert not report.parsed.parser_errors, filename
+        ids = {f.id for f in report.findings}
+        # Must detect dunder traversal, dangerous calls, sandbox escape, file inclusion
+        assert "CT101" in ids, f"{filename}: missing CT101 (dunder traversal)"
+        assert "CT102" in ids, f"{filename}: missing CT102 (dangerous function call)"
+        assert "CT104" in ids, f"{filename}: missing CT104 (sandbox escape)"
+        assert "CT105" in ids, f"{filename}: missing CT105 (file inclusion)"
+        # Must detect prompt-level risks
+        assert "CT110" in ids, f"{filename}: missing CT110 (system role omission)"
+        assert "CT111" in ids, f"{filename}: missing CT111 (backdoor phrase)"
+        # Template must have been discovered
+        assert report.parsed.extra.get("chat_templates"), f"{filename}: no chat templates extracted"
