@@ -26,15 +26,34 @@ def print_banner(title: str, step: str) -> None:
 
 def print_findings(findings: list) -> None:
     if not findings:
-        print("  [OK] No violations or anomalies detected.")
+        print("\n  [VERDICT] PASSED: No security violations or structural anomalies detected.")
         return
+
+    counts = {"CRITICAL": 0, "ERROR": 0, "WARNING": 0, "INFO": 0}
     for f in findings:
+        counts[f.severity] = counts.get(f.severity, 0) + 1
+
+    print(f"\n  Findings Breakdown: [CRITICAL: {counts['CRITICAL']}]  [ERROR: {counts['ERROR']}]  [WARNING: {counts['WARNING']}]  [INFO: {counts['INFO']}]")
+
+    for idx, f in enumerate(findings, 1):
         sev_tag = f"[{f.severity}]"
-        print(f"  {sev_tag:<10} ID: {f.id:<6} Category: {f.category:<22} Message: {f.message}")
+        print(f"\n  ┌── {sev_tag:<10} #{idx}: ID {f.id} · {f.category}\n  │   Message:     {f.message}")
         if f.evidence:
-            print(f"             Evidence: {json.dumps(f.evidence)}")
+            ev_str = json.dumps(f.evidence) if isinstance(f.evidence, dict) else str(f.evidence)
+            print(f"  │   Evidence:    {ev_str}")
         if f.remediation:
-            print(f"             Remediation: {f.remediation}")
+            print(f"  │   Remediation: {f.remediation}")
+        print("  └──")
+
+    if counts["CRITICAL"] > 0:
+        verdict = "FAILED · CRITICAL RISK (Arbitrary code execution or sandbox escape detected)"
+    elif counts["ERROR"] > 0:
+        verdict = "FAILED · HIGH RISK (Disallowed syntax, inclusion, or parser error)"
+    elif counts["WARNING"] > 0:
+        verdict = "WARNING · ADVISORY (Prompt backdoor, system omission, or reference divergence)"
+    else:
+        verdict = "INFO · ACCEPTABLE (Custom format detected)"
+    print(f"\n  [VERDICT] {verdict}")
 
 
 def scan_custom_model(file_path: Path, analyzer: TemplateAnalyzer) -> None:
@@ -49,9 +68,10 @@ def scan_custom_model(file_path: Path, analyzer: TemplateAnalyzer) -> None:
         print(f"Error detecting format: {exc}")
         return
 
-    print(f"File Path: {file_path}")
-    print(f"Detected Format: {format_name}")
-    print(f"File Size: {file_path.stat().st_size:,} bytes")
+    print("  Model Information:")
+    print(f"    • File Path:       {file_path}")
+    print(f"    • Detected Format: {format_name}")
+    print(f"    • File Size:       {file_path.stat().st_size:,} bytes")
 
     parser = GGUFParser() if format_name == "GGUF" else SafetensorsParser()
     try:
@@ -66,13 +86,13 @@ def scan_custom_model(file_path: Path, analyzer: TemplateAnalyzer) -> None:
         print("  Checked: metadata keys (tokenizer.chat_template, chat_template) and tokenizer_config.json")
         return
 
-    print(f"\nDiscovered {len(templates)} Chat Template(s):")
+    print(f"\n  Discovered {len(templates)} Chat Template(s):")
     for idx, tmpl in enumerate(templates, 1):
-        print(f"  [{idx}] Name: '{tmpl.name}' | Source: {tmpl.source} | Length: {len(tmpl.content)} chars")
-        preview = tmpl.content.strip()[:180].replace("\n", " ")
-        print(f"      Preview: {preview}...")
+        print(f"    [{idx}] Name: '{tmpl.name}' | Source: {tmpl.source} | Length: {len(tmpl.content)} chars")
+        preview = tmpl.content.strip()[:140].replace("\n", " ")
+        print(f"        Preview: {preview}...")
 
-    print("\nStatic AST Analysis Results:")
+    print("\n  Static AST Analysis Results:")
     findings = analyzer.analyze(model)
     print_findings(findings)
     print("\n" + "=" * 70 + "\n")
