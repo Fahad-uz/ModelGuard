@@ -15,7 +15,7 @@ The terminal command, JSON export, and HTML page are presentation views for thes
 
 ## Requirements and installation
 
-Python 3.11 or newer is required. Runtime parsing has no third-party dependencies. From this repository's root:
+Python 3.11 or newer is required. Core container parsing has no third-party dependencies; Module 3 uses `jinja2` for static AST parsing without rendering. From this repository's root:
 
 ```bash
 python3 -m venv .venv

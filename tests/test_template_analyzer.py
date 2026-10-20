@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from modelguard.analyzers.template_analyzer import (
+    HAVE_JINJA2,
     MAX_TEMPLATE_BYTES,
     ExtractedTemplate,
     TemplateAnalyzer,
@@ -174,6 +177,7 @@ def test_detect_dunder_via_getitem() -> None:
     assert ct101[0].category == "template_code_risk"
 
 
+@pytest.mark.skipif(not HAVE_JINJA2, reason="Jinja2 required for AST inspection")
 def test_detect_dangerous_function_call() -> None:
     tmpl = "{{ eval('1+1') }}"
     model = _parsed({"tokenizer.chat_template": tmpl})
@@ -186,6 +190,7 @@ def test_detect_dangerous_function_call() -> None:
     assert "eval" in ct102[0].evidence.get("functions", [])
 
 
+@pytest.mark.skipif(not HAVE_JINJA2, reason="Jinja2 required for AST inspection")
 def test_detect_sandbox_escape_pattern() -> None:
     tmpl = "{{ cycler.__init__.__globals__ }}"
     model = _parsed({"tokenizer.chat_template": tmpl})
@@ -197,6 +202,7 @@ def test_detect_sandbox_escape_pattern() -> None:
     assert ct104[0].category == "template_code_risk"
 
 
+@pytest.mark.skipif(not HAVE_JINJA2, reason="Jinja2 required for AST inspection")
 def test_detect_template_inclusion_and_import() -> None:
     tmpl = "{% include '/etc/shadow' %}{% import 'malicious.jinja' as mal %}"
     model = _parsed({"tokenizer.chat_template": tmpl})
@@ -277,6 +283,7 @@ def test_generation_prompt_notice() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not HAVE_JINJA2, reason="Jinja2 required for AST inspection")
 def test_detect_malformed_jinja_syntax() -> None:
     bad_syntax = "{% for m in messages %}{{ m.content }"  # Unclosed tag
     model = _parsed({"tokenizer.chat_template": bad_syntax})
@@ -308,6 +315,7 @@ def test_detect_empty_template() -> None:
     assert ct123[0].id == "CT123"
 
 
+@pytest.mark.skipif(not HAVE_JINJA2, reason="Jinja2 required for AST inspection")
 def test_detect_excessive_ast_nesting_depth() -> None:
     # Build a template with nesting deeper than MAX_TEMPLATE_AST_DEPTH
     from modelguard.analyzers.template_analyzer import MAX_TEMPLATE_AST_DEPTH

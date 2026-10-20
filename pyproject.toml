@@ -7,10 +7,15 @@ name = "modelguard"
 version = "0.1.0"
 description = "Static GGUF and safetensors structural inspection"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "jinja2>=3.0",
+]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+test = [
+    "pytest>=8",
+    "jinja2>=3.0",
+]
 
 [project.scripts]
 modelguard = "modelguard.cli:main"
