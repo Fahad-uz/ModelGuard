@@ -14,7 +14,7 @@ from modelguard.parsers.safetensors_parser import SafetensorsParser
 logger = logging.getLogger(__name__)
 
 
-def scan_file(path: str | Path) -> ScanResult:
+def scan_file(path: str | Path, *, template_profile: str = "auto") -> ScanResult:
     """Scan a file without loading tensor contents or executing model data."""
     model_path = Path(path)
     size = 0
@@ -26,6 +26,8 @@ def scan_file(path: str | Path) -> ScanResult:
                  if isinstance(exc, ParserError)
                  else ParserIssue("MG002", f"Cannot read model file: {exc}", "path"))
         parsed = ParsedModel(model_path, "UNKNOWN", size, parser_errors=[issue])
+        parsed.extra["template_analysis"] = {"status": "not_run", "complete": False,
+                                              "reason": "Container could not be opened or identified"}
         return ScanResult(parsed, StructureAnalyzer().analyze(parsed))
 
     parser = GGUFParser() if format_name == "GGUF" else SafetensorsParser()
@@ -46,10 +48,13 @@ def scan_file(path: str | Path) -> ScanResult:
 
     try:
         from modelguard.analyzers.template_analyzer import TemplateAnalyzer
-        findings.extend(TemplateAnalyzer().analyze(parsed))
+        findings.extend(TemplateAnalyzer().analyze(parsed, profile=template_profile))
     except Exception as exc:
         logger.exception("Unexpected template analysis failure while scanning %s", model_path)
         findings.append(Finding("CT999", "ERROR", "template_analyzer", f"Template analysis failed safely: {type(exc).__name__}: {exc}"))
+        parsed.extra["template_analysis"] = {"status": "failed", "complete": False,
+                                              "reason": "Unexpected template analysis failure"}
 
     return ScanResult(parsed, findings)
+
 

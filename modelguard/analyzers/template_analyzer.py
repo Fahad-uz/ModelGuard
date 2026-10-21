@@ -1,459 +1,341 @@
-"""Static chat-template extractor and safety analyzer without template rendering."""
+"""Bounded static chat-template inspection, without rendering or compilation."""
 
 from __future__ import annotations
 
+from dataclasses import asdict
+import hashlib
 import json
-import logging
-import re
-from dataclasses import dataclass
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import unicodedata
 from typing import Any
 
 try:
     import jinja2
     from jinja2 import nodes as jnodes
+    from modelguard.analyzers.template_static import (
+        BudgetExceeded, GenerationExtension, StaticResolver, inventory, lex_budget,
+    )
     HAVE_JINJA2 = True
-except ImportError:  # pragma: no cover
+except ImportError:
     jinja2 = None
     jnodes = None
     HAVE_JINJA2 = False
 
 from modelguard import limits
+from modelguard.analyzers.template_extractor import ExtractedTemplate, TemplateExtractor
 from modelguard.analyzers.trusted_templates import compare_template_with_references
-from modelguard.models.results import Finding, ParsedModel, Severity
+from modelguard.models.results import Finding, ParsedModel
 
-logger = logging.getLogger(__name__)
-
-# Conservative template size and recursion ceilings (Slide 8, 16)
 MAX_TEMPLATE_BYTES = limits.MAX_TEMPLATE_BYTES
 MAX_TEMPLATE_AST_DEPTH = limits.MAX_TEMPLATE_AST_DEPTH
 
-
-# Backdoor phrases and suspicious prompt overrides
 SUSPICIOUS_PROMPT_PATTERNS = [
-    re.compile(r"\bignore\s+(?:all\s+)?previous\s+instructions\b", re.IGNORECASE),
-    re.compile(r"\bbypass\s+(?:safety|guardrails|filters)\b", re.IGNORECASE),
-    re.compile(r"\byou\s+are\s+now\s+in\s+developer\s+mode\b", re.IGNORECASE),
-    re.compile(r"\bsecretly\s+(?:exfiltrate|send|leak)\b", re.IGNORECASE),
-    re.compile(r"\bhidden\s+backdoor\b", re.IGNORECASE),
-    re.compile(r"\boverride\s+system\s+prompt\b", re.IGNORECASE),
+    re.compile(pattern, re.IGNORECASE) for pattern in (
+        r"\bignore\s+(?:all\s+)?previous\s+instructions\b",
+        r"\bbypass\s+(?:safety|guardrails|filters)\b",
+        r"\byou\s+are\s+now\s+in\s+developer\s+mode\b",
+        r"\bsecretly\s+(?:exfiltrate|send|leak)\b",
+        r"\bhidden\s+backdoor\b", r"\boverride\s+system\s+prompt\b",
+    )
 ]
-
-# Dunder pattern for regex matching
-DUNDER_PATTERN = re.compile(r"\b__[a-zA-Z0-9_]+__\b")
-
-# Dangerous builtins/functions that templates must not invoke
 DANGEROUS_FUNCTIONS = {
-    "eval", "exec", "compile", "open", "os", "sys", "subprocess",
-    "popen", "breakpoint", "__import__", "getattr", "setattr", "delattr",
+    "eval", "exec", "compile", "open", "popen", "breakpoint", "__import__",
+    "getattr", "setattr", "delattr",
 }
-
-# Suspicious sandbox globals
+SYSTEM_MODULES = {"os", "sys", "subprocess", "posix", "builtins", "__builtins__"}
 SANDBOX_ESCAPE_GLOBALS = {"lipsum", "cycler", "joiner", "namespace"}
 
 
-def _finding(
-    code: str,
-    severity: Severity,
-    category: str,
-    message: str,
-    field: str | None = None,
-    evidence: object = None,
-    remediation: str | None = None,
-) -> Finding:
-    return Finding(code, severity, category, message, field, evidence, remediation)
-
-
-@dataclass(slots=True)
-class ExtractedTemplate:
-    source: str
-    content: str
-    name: str = "default"
-
-
-class TemplateExtractor:
-    """Safely extracts chat templates from model metadata or associated package files."""
-
-    def extract(self, model: ParsedModel) -> list[ExtractedTemplate]:
-        templates: list[ExtractedTemplate] = []
-        metadata = model.metadata
-
-        if isinstance(metadata, dict):
-            # 1. GGUF standard metadata key: tokenizer.chat_template
-            main_template = metadata.get("tokenizer.chat_template")
-            if isinstance(main_template, str) and main_template.strip():
-                templates.append(ExtractedTemplate(
-                    source="metadata.tokenizer.chat_template",
-                    content=main_template,
-                    name="default",
-                ))
-
-            # 2. Named templates: tokenizer.chat_template.<name>
-            for key, val in metadata.items():
-                if key.startswith("tokenizer.chat_template.") and isinstance(val, str) and val.strip():
-                    name = key.split("tokenizer.chat_template.", 1)[1]
-                    templates.append(ExtractedTemplate(
-                        source=f"metadata.{key}",
-                        content=val,
-                        name=name,
-                    ))
-
-            # 3. Safetensors / root metadata key: chat_template
-            if not templates:
-                root_tmpl = metadata.get("chat_template")
-                if isinstance(root_tmpl, str) and root_tmpl.strip():
-                    templates.append(ExtractedTemplate(
-                        source="metadata.chat_template",
-                        content=root_tmpl,
-                        name="default",
-                    ))
-
-        # 4. Associated tokenizer files if available in the model directory
-        if not templates and model.path and model.path.parent.is_dir():
-            templates.extend(self._extract_from_sibling_files(model.path.parent))
-
-        return templates
-
-    def _extract_from_sibling_files(self, directory: Path) -> list[ExtractedTemplate]:
-        results: list[ExtractedTemplate] = []
-        # Check tokenizer_config.json
-        cfg_path = directory / "tokenizer_config.json"
-        if cfg_path.is_file():
-            try:
-                # Bounded read
-                if cfg_path.stat().st_size <= limits.MAX_HEADER_BYTES:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    tmpl = data.get("chat_template")
-                    if isinstance(tmpl, str) and tmpl.strip():
-                        results.append(ExtractedTemplate(
-                            source="tokenizer_config.json#chat_template",
-                            content=tmpl,
-                            name="default",
-                        ))
-                    elif isinstance(tmpl, list):
-                        for item in tmpl:
-                            if isinstance(item, dict) and "template" in item:
-                                t_name = str(item.get("name", "custom"))
-                                t_content = str(item["template"])
-                                if t_content.strip():
-                                    results.append(ExtractedTemplate(
-                                        source=f"tokenizer_config.json#{t_name}",
-                                        content=t_content,
-                                        name=t_name,
-                                    ))
-            except Exception as exc:
-                logger.debug("Failed to read tokenizer_config.json in %s: %s", directory, exc)
-
-        # Check chat_template.json
-        direct_path = directory / "chat_template.json"
-        if not results and direct_path.is_file():
-            try:
-                if direct_path.stat().st_size <= limits.MAX_HEADER_BYTES:
-                    with open(direct_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    tmpl = data.get("chat_template") if isinstance(data, dict) else None
-                    if isinstance(tmpl, str) and tmpl.strip():
-                        results.append(ExtractedTemplate(
-                            source="chat_template.json#chat_template",
-                            content=tmpl,
-                            name="default",
-                        ))
-            except Exception as exc:
-                logger.debug("Failed to read chat_template.json in %s: %s", directory, exc)
-
-        return results
+def _finding(code: str, severity: str, category: str, message: str,
+             source: str, evidence: object = None, remediation: str | None = None) -> Finding:
+    return Finding(code, severity, category, message, source, evidence, remediation)
 
 
 class TemplateAnalyzer:
-    """Statically checks chat templates without rendering or executing them.
-
-    Keeps code-risk and prompt-content findings separate (Slide 9).
-    """
+    """Own extraction, inspection budgets and coverage for every entry point."""
 
     def __init__(self) -> None:
         self.extractor = TemplateExtractor()
         self._jinja_env: Any = None
         if HAVE_JINJA2:
-            self._jinja_env = jinja2.Environment()
+            self._jinja_env = jinja2.Environment(extensions=[GenerationExtension, "jinja2.ext.loopcontrols"])
 
-    def analyze(self, model: ParsedModel, *, custom_template: str | None = None) -> list[Finding]:
-        findings: list[Finding] = []
-
-        if custom_template is not None:
-            templates = [ExtractedTemplate(source="custom", content=custom_template)]
+    def analyze(self, model: ParsedModel, *, custom_template: str | None = None,
+                profile: str = "auto") -> list[Finding]:
+        if custom_template is None:
+            templates = self.extractor.extract(model, profile=profile)
         else:
-            templates = self.extractor.extract(model)
-
-        if not templates:
-            return findings
-
-        # Record discovered templates in model.extra for reporting
-        model.extra["chat_templates"] = [
-            {"source": t.source, "name": t.name, "length": len(t.content)}
-            for t in templates
+            templates = [ExtractedTemplate("custom", custom_template)]
+            model.extra["chat_templates"] = []
+            model.extra["template_analysis"] = {
+                "status": "pending", "complete": True, "loader_profile": "custom",
+                "inspected_sources": [], "skipped_sources": [], "conflicts": [],
+                "extraction_findings": [],
+            }
+        state = model.extra["template_analysis"]
+        if model.parser_errors:
+            state["complete"] = False
+            state["skipped_sources"].append({"source": "container metadata", "reason": "Container parsing was incomplete"})
+        findings = [Finding(**item) for item in state.pop("extraction_findings", [])]
+        summaries: list[dict[str, object]] = []
+        model.extra["chat_templates"] = summaries
+        state["dialect"] = "transformers-jinja (generation and loop controls)"
+        state["runtime_verified"] = False
+        state["limitations"] = [
+            "Static indicators do not establish malicious intent or downstream exploitability.",
+            "Role-flow, prompt content and format resemblance checks are conservative heuristics.",
         ]
-
-        # Extract declared architecture if present in metadata
-        declared_arch = None
-        if isinstance(model.metadata, dict):
-            arch_val = model.metadata.get("general.architecture")
-            if isinstance(arch_val, str):
-                declared_arch = arch_val
-
-        for tmpl in templates:
-            findings.extend(self._analyze_single_template(tmpl, declared_arch))
-
-        return findings
-
-    def _analyze_single_template(
-        self,
-        tmpl: ExtractedTemplate,
-        declared_arch: str | None = None,
-    ) -> list[Finding]:
-        findings: list[Finding] = []
-        content = tmpl.content
-        field_name = tmpl.source
-
-        # 1. Structural / Size checks
-        byte_len = len(content.encode("utf-8", errors="replace"))
-        if byte_len == 0:
-            findings.append(_finding(
-                "CT123", "INFO", "template_syntax",
-                "Chat template is empty",
-                field_name,
-            ))
-            return findings
-
-        if byte_len > MAX_TEMPLATE_BYTES:
-            findings.append(_finding(
-                "CT121", "WARNING", "template_syntax",
-                f"Chat template size ({byte_len} bytes) exceeds configured limit ({MAX_TEMPLATE_BYTES} bytes)",
-                field_name,
-                {"size": byte_len, "limit": MAX_TEMPLATE_BYTES},
-                "Ensure the chat template is not padded or abused for resource exhaustion.",
-            ))
-
-        # 2. Parse AST safely without rendering
-        ast: Any = None
-        if self._jinja_env is not None:
-            try:
-                ast = self._jinja_env.parse(content)
-            except jinja2.TemplateSyntaxError as exc:
-                findings.append(_finding(
-                    "CT120", "ERROR", "template_syntax",
-                    f"Malformed Jinja2 syntax: {exc.message}",
-                    field_name,
-                    {"line": exc.lineno, "message": exc.message},
-                    "Fix template syntax to ensure compatibility with standard inference loaders.",
-                ))
-            except Exception as exc:
-                findings.append(_finding(
-                    "CT120", "ERROR", "template_syntax",
-                    f"Template parser error: {type(exc).__name__}: {exc}",
-                    field_name,
-                    {"error": str(exc)},
-                ))
-
-        # 3. Code-Risk Checks (Category: template_code_risk)
-        findings.extend(self._check_code_risks(content, ast, field_name))
-
-        # 4. Prompt-Content Checks (Category: template_prompt_risk)
-        findings.extend(self._check_prompt_risks(content, ast, field_name))
-
-        # 5. Reference Comparison Checks (Category: template_reference)
-        findings.extend(self._check_reference(content, declared_arch, field_name))
-
-        return findings
-
-    def _check_code_risks(self, content: str, ast: Any, field_name: str) -> list[Finding]:
-        findings: list[Finding] = []
-
-        # A. Dunder attribute access or method traversal (CT101 - CRITICAL)
-        dunders_found: set[str] = set(DUNDER_PATTERN.findall(content))
-
-        if ast is not None and HAVE_JINJA2:
-            # Check Getattr nodes
-            for node in ast.find_all(jnodes.Getattr):
-                if node.attr.startswith("__") and node.attr.endswith("__"):
-                    dunders_found.add(node.attr)
-            # Check Getitem nodes with constant string keys
-            for node in ast.find_all(jnodes.Getitem):
-                if (isinstance(node.arg, jnodes.Const)
-                        and isinstance(node.arg.value, str)
-                        and node.arg.value.startswith("__")
-                        and node.arg.value.endswith("__")):
-                    dunders_found.add(node.arg.value)
-
-        if dunders_found:
-            findings.append(_finding(
-                "CT101", "CRITICAL", "template_code_risk",
-                "Dunder attribute or method traversal detected in chat template",
-                field_name,
-                {"dunder_attributes": sorted(dunders_found)},
-                "Remove Python dunder accesses; chat templates must not navigate Python object internals.",
-            ))
-
-        # B. Disallowed function or system call invocation (CT102 - CRITICAL)
-        if ast is not None and HAVE_JINJA2:
-            dangerous_calls: set[str] = set()
-            for call_node in ast.find_all(jnodes.Call):
-                target = call_node.node
-                if isinstance(target, jnodes.Name) and target.name in DANGEROUS_FUNCTIONS:
-                    dangerous_calls.add(target.name)
-                elif isinstance(target, jnodes.Getattr) and target.attr in DANGEROUS_FUNCTIONS:
-                    dangerous_calls.add(target.attr)
-            if dangerous_calls:
-                findings.append(_finding(
-                    "CT102", "CRITICAL", "template_code_risk",
-                    "Disallowed function or system call invocation in chat template",
-                    field_name,
-                    {"functions": sorted(dangerous_calls)},
-                    "Remove system/code execution calls from template.",
-                ))
-
-            # C. Sandbox escape targets (CT104 - CRITICAL)
-            escape_targets: set[str] = set()
-            for name_node in ast.find_all(jnodes.Name):
-                if name_node.name in SANDBOX_ESCAPE_GLOBALS:
-                    # Verify if this global is chained with attribute access or calls
-                    escape_targets.add(name_node.name)
-            if escape_targets and dunders_found:
-                findings.append(_finding(
-                    "CT104", "CRITICAL", "template_code_risk",
-                    "Jinja sandbox escape pattern detected with escape globals",
-                    field_name,
-                    {"escape_globals": sorted(escape_targets)},
-                    "Templates must not access Jinja sandbox escape globals like lipsum or cycler.",
-                ))
-
-            # D. File inclusion / external template import (CT105 - ERROR)
-            includes: list[str] = []
-            for inc in ast.find_all(jnodes.Include):
-                if isinstance(inc.template, jnodes.Const) and isinstance(inc.template.value, str):
-                    includes.append(inc.template.value)
-                else:
-                    includes.append("<dynamic>")
-            for imp in ast.find_all((jnodes.Import, jnodes.FromImport)):
-                if hasattr(imp, "template") and isinstance(imp.template, jnodes.Const):
-                    includes.append(str(imp.template.value))
-                else:
-                    includes.append("<import>")
-            if includes:
-                findings.append(_finding(
-                    "CT105", "ERROR", "template_code_risk",
-                    "External template import or file inclusion attempted",
-                    field_name,
-                    {"targets": includes},
-                    "Chat templates must be self-contained; remove include/import tags.",
-                ))
-
-            # E. AST nesting depth check (CT122 - WARNING)
-            depth = self._max_ast_depth(ast)
-            if depth > MAX_TEMPLATE_AST_DEPTH:
-                findings.append(_finding(
-                    "CT122", "WARNING", "template_syntax",
-                    f"Excessive AST nesting depth ({depth} > {MAX_TEMPLATE_AST_DEPTH})",
-                    field_name,
-                    {"depth": depth, "limit": MAX_TEMPLATE_AST_DEPTH},
-                    "Simplify nested Jinja blocks to prevent parser stack overflow.",
-                ))
-
-        return findings
-
-    def _check_prompt_risks(self, content: str, ast: Any, field_name: str) -> list[Finding]:
-        findings: list[Finding] = []
-
-        # A. System message omission / suppression (CT110 - WARNING)
-        # Check if template processes messages and handles roles
-        has_messages = "messages" in content
-        handles_user = "'user'" in content or '"user"' in content
-        handles_assistant = (
-            "'assistant'" in content or '"assistant"' in content or
-            "'model'" in content or '"model"' in content
-        )
-        handles_system = "'system'" in content or '"system"' in content
-
-        if has_messages and handles_user and handles_assistant and not handles_system:
-            findings.append(_finding(
-                "CT110", "WARNING", "template_prompt_risk",
-                "System message role is omitted or silently discarded by the template",
-                field_name,
-                {"roles_handled": ["user", "assistant"], "system_handled": False},
-                "Ensure the chat template incorporates system messages to preserve security guardrails.",
-            ))
-
-        # B. Hardcoded backdoor instructions or suspicious override (CT111 - WARNING)
-        matched_backdoors: list[str] = []
-        for pat in SUSPICIOUS_PROMPT_PATTERNS:
-            match = pat.search(content)
-            if match:
-                matched_backdoors.append(match.group(0))
-
-        if matched_backdoors:
-            findings.append(_finding(
-                "CT111", "WARNING", "template_prompt_risk",
-                "Suspicious prompt override or backdoor instructions in chat template text",
-                field_name,
-                {"matches": matched_backdoors},
-                "Inspect template text to ensure it does not covertly inject adversarial instructions.",
-            ))
-
-        # C. Generation prompt control check (CT113 - INFO)
-        if has_messages and "add_generation_prompt" not in content:
-            findings.append(_finding(
-                "CT113", "INFO", "template_prompt_risk",
-                "Template does not reference 'add_generation_prompt' for generation control",
-                field_name,
-                remediation="Consider supporting 'add_generation_prompt' for standard generation formatting.",
-            ))
-
-        return findings
-
-    def _check_reference(
-        self,
-        content: str,
-        declared_arch: str | None,
-        field_name: str,
-    ) -> list[Finding]:
-        findings: list[Finding] = []
-        comp = compare_template_with_references(content, declared_arch)
-
-        if comp.architecture_divergence:
-            findings.append(_finding(
-                "CT131", "WARNING", "template_reference",
-                f"Template diverges from canonical reference for architecture '{declared_arch}'",
-                field_name,
-                comp.evidence,
-                "Verify whether the template divergence is intentional for this model variant.",
-            ))
-        elif comp.matched_reference is not None:
-            findings.append(_finding(
-                "CT130", "INFO", "template_reference",
-                f"Matches canonical reference template: {comp.matched_reference.name}",
-                field_name,
-                comp.evidence,
-            ))
+        arch = model.metadata.get("general.architecture") if isinstance(model.metadata, dict) else None
+        arch = arch if isinstance(arch, str) else None
+        deadline = time.monotonic() + limits.MAX_TEMPLATE_SCAN_SECONDS
+        total_bytes = 0
+        for index, template in enumerate(templates):
+            summary: dict[str, object] = {
+                "source": template.source, "name": template.name,
+                "length": len(template.content), "effective": template.effective,
+            }
+            summaries.append(summary)
+            byte_len = len(template.content.encode("utf-8", errors="replace"))
+            total_bytes += byte_len
+            if (index >= limits.MAX_TEMPLATES or byte_len > MAX_TEMPLATE_BYTES
+                    or total_bytes > limits.MAX_TEMPLATE_TOTAL_BYTES):
+                found = [_finding("CT121", "WARNING", "template_coverage", "Template resource budget exceeded; parsing skipped", template.source)]
+                detail = {"status": "skipped", "complete": False}
+            elif self._jinja_env is None:
+                found = [_finding("CT124", "ERROR", "template_coverage", "Jinja parser unavailable; AST inspection was not performed", template.source)]
+                detail = {"status": "unavailable", "complete": False}
+            elif time.monotonic() >= deadline:
+                found = [_finding("CT125", "ERROR", "template_coverage", "Template scan deadline exceeded; remaining source skipped", template.source)]
+                detail = {"status": "skipped", "complete": False}
+            else:
+                found, detail = self._run_worker(template, arch, min(limits.MAX_TEMPLATE_WORKER_SECONDS, deadline - time.monotonic()))
+            summary.update(detail)
+            if not summary.get("complete"):
+                state["complete"] = False
+                state["skipped_sources"].append({"source": template.source, "reason": summary.get("status")})
+            for finding in found:
+                evidence = dict(finding.evidence) if isinstance(finding.evidence, dict) else {}
+                evidence.update({"template_name": template.name, "effective": template.effective,
+                                 "runtime_verified": False})
+                finding.evidence = evidence
+                # Loader selection is context, never a reason to suppress a
+                # syntax indicator: applications may override template sources.
+                findings.append(finding)
+        if not state["complete"]:
+            state["status"] = "incomplete"
+        elif templates:
+            state["status"] = "completed"
         else:
-            findings.append(_finding(
-                "CT132", "INFO", "template_reference",
-                "Custom chat template format detected; details preserved for review",
-                field_name,
-                comp.evidence,
-            ))
+            state["status"] = "absent"
+        state["templates_inspected"] = sum(item.get("status") == "completed" for item in summaries)
+        state["templates_discovered"] = len(templates)
+        return findings
 
+    @staticmethod
+    def _run_worker(template: ExtractedTemplate, arch: str | None, timeout: float) -> tuple[list[Finding], dict[str, object]]:
+        request = json.dumps({"template": asdict(template), "architecture": arch}, ensure_ascii=True)
+        if len(request.encode("utf-8")) > limits.MAX_TEMPLATE_WORKER_OUTPUT_BYTES * 2:
+            return [_finding("CT121", "WARNING", "template_coverage", "Template request exceeds worker budget", template.source)], {"status": "skipped", "complete": False}
+        environment = dict(os.environ)
+        # Isolated Python must never import a model-directory package or
+        # sitecustomize.py through cwd/PYTHONPATH. Bootstrap only the already
+        # imported, trusted package and dependency locations.
+        import markupsafe
+        package_root = str(Path(__file__).resolve().parents[2])
+        paths = list(dict.fromkeys([package_root, str(Path(jinja2.__file__).resolve().parent.parent),
+                                    str(Path(markupsafe.__file__).resolve().parent.parent)]))
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        bootstrap = "import sys,runpy;sys.path[:0]=sys.argv[1:];runpy.run_module('modelguard.template_worker',run_name='__main__')"
+        try:
+            started = time.monotonic()
+            completed = subprocess.run(
+                [sys.executable, "-I", "-c", bootstrap, *paths], input=request,
+                capture_output=True, text=True, encoding="utf-8", env=environment,
+                timeout=max(0.01, timeout), check=False, cwd=package_root,
+            )
+            if completed.returncode or len(completed.stdout.encode("utf-8")) > limits.MAX_TEMPLATE_WORKER_OUTPUT_BYTES:
+                raise ValueError("Template worker did not return a bounded result")
+            result = json.loads(completed.stdout)
+            result["summary"]["elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
+            return [Finding(**item) for item in result["findings"]], result["summary"]
+        except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+            return [_finding("CT125", "ERROR", "template_coverage", "Template worker failed or exceeded its deadline", template.source,
+                             {"reason": type(exc).__name__})], {"status": "failed", "complete": False}
+
+    def _inspect_single_template(self, template: ExtractedTemplate, arch: str | None = None) -> tuple[list[Finding], dict[str, object]]:
+        """Worker implementation; only bounded syntax inspection occurs here."""
+        content, source = template.content, template.source
+        summary: dict[str, object] = {
+            "status": "completed", "complete": True,
+            "sha256": hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest(),
+        }
+        if len(content.encode("utf-8", errors="replace")) > MAX_TEMPLATE_BYTES:
+            return [_finding("CT121", "WARNING", "template_coverage", "Template byte limit exceeded", source)], {"status": "skipped", "complete": False}
+        if not content.strip():
+            return [_finding("CT123", "INFO", "template_syntax", "Chat template is empty", source)], summary
+        try:
+            lex_budget(self._jinja_env, content)
+            ast = self._jinja_env.parse(content)
+            ast_nodes = inventory(ast)
+        except (BudgetExceeded, RecursionError, MemoryError) as exc:
+            return [_finding("CT122", "WARNING", "template_syntax", f"Template complexity limit reached: {type(exc).__name__}", source)], {"status": "skipped", "complete": False}
+        except jinja2.TemplateSyntaxError as exc:
+            unsupported = "unknown tag" in exc.message.lower()
+            return [_finding("CT126" if unsupported else "CT120", "ERROR", "template_syntax",
+                             f"{'Unsupported template dialect' if unsupported else 'Malformed Jinja syntax'}: {exc.message[:240]}",
+                             source, {"line": exc.lineno})], {"status": "unsupported" if unsupported else "failed", "complete": False}
+        resolver = StaticResolver(ast_nodes)
+        summary["ast_nodes"] = len(ast_nodes)
+        summary["ast_depth"] = self._max_ast_depth(ast)
+        summary["ast_node_types"] = sorted({type(node).__name__ for node in ast_nodes})
+        findings = []
+        try:
+            findings.extend(self._code_risks(ast_nodes, resolver, source))
+            comparison = compare_template_with_references(content, arch)
+            findings.extend(self._prompt_risks(ast_nodes, resolver, source, comparison))
+        except (BudgetExceeded, RecursionError, MemoryError) as exc:
+            findings.append(_finding("CT122", "WARNING", "template_syntax", f"Static analysis budget reached: {type(exc).__name__}", source))
+            summary.update({"status": "skipped", "complete": False})
+            return findings, summary
+        summary["reference"] = comparison.evidence
+        if comparison.evidence.get("exact_reference"):
+            message = "Exact byte match to pinned reference snapshot; model identity and safety are not authenticated"
+            code, severity = "CT134", "INFO"
+        elif comparison.architecture_divergence:
+            message = "Template format differs from a suggested architecture profile; custom variants may be legitimate"
+            code, severity = "CT131", "WARNING"
+        elif comparison.matched_reference is not None:
+            message = f"Resembles format example: {comparison.matched_reference.name}; provenance unverified"
+            code, severity = "CT130", "INFO"
+        else:
+            message = "Custom template format; no verified reference match"
+            code, severity = "CT132", "INFO"
+        findings.append(_finding(code, severity, "template_reference", message, source, comparison.evidence))
+        return findings, summary
+
+    def _analyze_single_template(self, template: ExtractedTemplate, declared_arch: str | None = None) -> list[Finding]:
+        """Compatibility helper with the same worker boundary as analyze()."""
+        return self._run_worker(template, declared_arch, limits.MAX_TEMPLATE_WORKER_SECONDS)[0]
+
+    @staticmethod
+    def _code_risks(ast_nodes: list[Any], resolver: Any, source: str) -> list[Finding]:
+        findings = []
+        dunders: set[str] = set()
+        calls: set[str] = set()
+        escape_targets: set[str] = set()
+        includes: list[str] = []
+        unresolved_lines: set[int] = set()
+        for node in ast_nodes:
+            paths = resolver.paths(node) if isinstance(node, (jnodes.Getattr, jnodes.Getitem, jnodes.Filter, jnodes.Call)) else set()
+            for path in paths:
+                attrs = [part for part in path[1:] if part.startswith("__") and part.endswith("__")]
+                dunders.update(attrs)
+                if attrs and path[0] in SANDBOX_ESCAPE_GLOBALS:
+                    escape_targets.add(path[0])
+            if isinstance(node, jnodes.Call):
+                for path in resolver.paths(node.node):
+                    if path[-1] in DANGEROUS_FUNCTIONS or any(part in SYSTEM_MODULES for part in path[:-1]):
+                        calls.add(".".join(path))
+            if isinstance(node, jnodes.Getitem) and resolver.string(node.arg) is None:
+                numeric = isinstance(node.arg, (jnodes.Slice, jnodes.Const)) and (
+                    isinstance(node.arg, jnodes.Slice) or type(node.arg.value) is int)
+                if not numeric and any(path[0] in SYSTEM_MODULES | SANDBOX_ESCAPE_GLOBALS or any(part.startswith("__") for part in path)
+                                       for path in resolver.paths(node.node)):
+                    unresolved_lines.add(node.lineno)
+            if isinstance(node, jnodes.Filter):
+                attribute = None
+                if node.name in {"attr", "selectattr", "rejectattr"} and node.args:
+                    attribute = resolver.string(node.args[0])
+                    if attribute is None:
+                        unresolved_lines.add(node.lineno)
+                for keyword in node.kwargs:
+                    if node.name == "map" and keyword.key == "attribute":
+                        attribute = resolver.string(keyword.value)
+                        if attribute is None:
+                            unresolved_lines.add(node.lineno)
+                if attribute and attribute.startswith("__") and attribute.endswith("__"):
+                    dunders.add(attribute)
+            if isinstance(node, (jnodes.Include, jnodes.Import, jnodes.FromImport, jnodes.Extends)):
+                includes.append((resolver.string(node.template) or "<dynamic>")[:240])
+        if dunders:
+            findings.append(_finding("CT101", "CRITICAL", "template_code_risk", "Python object-internals access in a template expression", source,
+                                     {"dunder_attributes": sorted(dunders), "confidence": "static indicator"}, "Remove object-internals traversal; verify the actual loader sandbox separately."))
+        if calls:
+            findings.append(_finding("CT102", "CRITICAL", "template_code_risk", "Potential code, process or file access in a template call", source,
+                                     {"functions": sorted(calls)}, "Remove these calls from the template."))
+        if escape_targets:
+            findings.append(_finding("CT104", "CRITICAL", "template_code_risk", "Object-internals traversal through a Jinja global", source,
+                                     {"escape_globals": sorted(escape_targets)}, "Remove the traversal; this finding does not prove a sandbox escape."))
+        if includes:
+            findings.append(_finding("CT105", "ERROR", "template_code_risk", "External template inclusion, import or inheritance", source,
+                                     {"targets": includes[:32]}, "Use a self-contained chat template."))
+        if unresolved_lines:
+            findings.append(_finding("CT103", "WARNING", "template_coverage", "Dynamic attribute names could not be statically resolved", source,
+                                     {"lines": sorted(unresolved_lines)[:32], "confidence": "unresolved"}))
+        return findings
+
+    @staticmethod
+    def _prompt_risks(ast_nodes: list[Any], resolver: Any, source: str, comparison: Any) -> list[Finding]:
+        findings = []
+        names = {node.name for node in ast_nodes if isinstance(node, jnodes.Name)}
+        roles = resolver.role_comparisons(ast_nodes)
+        rejects_system = False
+        drops_system = False
+        for node in ast_nodes:
+            if not isinstance(node, jnodes.If):
+                continue
+            test_nodes = inventory(node.test)
+            if "system" not in resolver.role_comparisons(test_nodes):
+                continue
+            body_nodes = [child for statement in node.body for child in inventory(statement)]
+            rejects = any(isinstance(child, jnodes.Call) and any(path[-1] == "raise_exception" for path in resolver.paths(child.node)) for child in body_nodes)
+            rejects_system |= rejects
+            if not rejects and (not node.body or any(isinstance(child, jnodes.Continue) for child in body_nodes)):
+                drops_system = True
+        reference = comparison.matched_reference
+        lacks_system_by_design = reference is not None and "system" not in reference.expected_roles
+        if drops_system or ("messages" in names and {"user", "assistant"}.issubset(roles) and "system" not in roles):
+            findings.append(_finding("CT110", "INFO" if lacks_system_by_design else "WARNING", "template_prompt_risk",
+                                     "Possible system-role filtering; intentional format restrictions require review", source,
+                                     {"roles_compared": sorted(roles), "confidence": "heuristic", "format_supports_system": not lacks_system_by_design}))
+        elif rejects_system:
+            findings.append(_finding("CT110", "INFO", "template_prompt_risk", "Template explicitly rejects system-role input", source,
+                                     {"confidence": "static indicator"}))
+        matches = []
+        controls = []
+        for line, text in resolver.output_strings(ast_nodes):
+            normalized = unicodedata.normalize("NFKC", text)
+            normalized = "".join(char for char in normalized if unicodedata.category(char) != "Cf")
+            for pattern in SUSPICIOUS_PROMPT_PATTERNS:
+                match = pattern.search(normalized)
+                if match and len(matches) < 16:
+                    matches.append({"line": line, "match": match.group(0)[:200], "normalized": normalized != text,
+                                    "original_excerpt": text[:240]})
+            if len(controls) < 32:
+                controls.extend({"line": line, "codepoint": f"U+{ord(char):04X}"} for char in text
+                                if unicodedata.category(char) == "Cf")
+                controls = controls[:32]
+        if matches:
+            findings.append(_finding("CT111", "WARNING", "template_prompt_risk", "Suspicious instruction phrase in potential template output; review context", source,
+                                     {"matches": matches, "confidence": "heuristic"}))
+        if controls:
+            findings.append(_finding("CT112", "WARNING", "template_prompt_risk", "Invisible or bidirectional formatting controls in potential template output", source,
+                                     {"controls": controls, "confidence": "heuristic"}))
+        if "messages" in names and "add_generation_prompt" not in names:
+            findings.append(_finding("CT113", "INFO", "template_compatibility", "Template does not reference add_generation_prompt; some formats intentionally omit it", source))
         return findings
 
     @staticmethod
     def _max_ast_depth(root: Any) -> int:
-        """Compute maximum AST nesting depth iteratively to avoid RecursionError."""
-        max_depth = 0
-        stack: list[tuple[Any, int]] = [(root, 1)]
+        maximum = 0
+        stack = [(root, 1)]
         while stack:
             node, depth = stack.pop()
-            if depth > max_depth:
-                max_depth = depth
-            if hasattr(node, "iter_child_nodes"):
-                for child in node.iter_child_nodes():
-                    stack.append((child, depth + 1))
-        return max_depth
+            maximum = max(maximum, depth)
+            stack.extend((child, depth + 1) for child in node.iter_child_nodes())
+        return maximum

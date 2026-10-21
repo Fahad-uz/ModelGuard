@@ -81,6 +81,9 @@ def report_dict(result: ScanResult) -> dict[str, object]:
             "format": parsed.format,
         },
         "parser_status": parser_status,
+        "template_analysis": _jsonable(parsed.extra.get("template_analysis", {"status": "not_run", "complete": False})),
+        "analysis_scope": {"runtime_verified": False, "model_identity_authenticated": False,
+                           "description": "Static container and template indicators; no inference or exploit validation"},
         "counts": {
             "metadata": len(parsed.metadata),
             "tensors": len(parsed.tensors),
@@ -133,9 +136,9 @@ def render_terminal(result: ScanResult) -> str:
     info_count = by_sev.get("INFO", 0)
 
     if crit_count > 0:
-        verdict = "CRITICAL RISK (Potential code execution or sandbox escape detected)"
+        verdict = "STATIC CODE-RISK INDICATORS (Loader exploitability not verified)"
     elif err_count > 0:
-        verdict = "HIGH RISK (Structural violations or template inclusion errors detected)"
+        verdict = "ERRORS REPORTED (Review findings and analysis coverage)"
     elif warn_count > 0:
         verdict = "WARNING (Anomalies or prompt divergences detected)"
     elif report["parser_status"] == "ERROR":
@@ -143,7 +146,11 @@ def render_terminal(result: ScanResult) -> str:
     elif report["parser_status"] == "WARNING":
         verdict = "PARSER WARNING (Non-standard container layout)"
     else:
-        verdict = "CLEAN (Specification-compliant container)"
+        verdict = "NO ERROR-LEVEL FINDINGS (No safety or authenticity guarantee)"
+
+    coverage = report["template_analysis"]
+    if not coverage.get("complete"):
+        verdict += " · TEMPLATE ANALYSIS INCOMPLETE"
 
     sep = "━" * 72
     thin_sep = "─" * 72
@@ -159,6 +166,7 @@ def render_terminal(result: ScanResult) -> str:
         f"Size: {parsed.file_size:,} bytes",
         f"Parser: {report['parser_status']} ({counts['parser_errors']} errors, {counts['parser_warnings']} warnings)",
         f"Verdict: {verdict}",
+        f"Template analysis: {_terminal(coverage.get('status', 'not_run'))}",
         f"Findings: {counts['findings']}",
         f"Breakdown: [CRITICAL: {crit_count}]  [ERROR: {err_count}]  [WARNING: {warn_count}]  [INFO: {info_count}]",
         thin_sep,
@@ -174,6 +182,15 @@ def render_terminal(result: ScanResult) -> str:
         if value is not None:
             lines.append(f"  • {label}: {_terminal(value)}")
 
+    lines.extend(["", thin_sep, "Template coverage:",
+                  f"  • Status: {_terminal(coverage.get('status', 'not_run'))}",
+                  f"  • Loader profile: {_terminal(coverage.get('loader_profile', 'unknown'))}",
+                  f"  • Inspected templates: {_terminal(coverage.get('templates_inspected', 0))}",
+                  "  • Static inspection does not verify runtime exploitability or model authenticity."])
+    for template in parsed.extra.get("chat_templates", []):
+        lines.append(f"  • {_terminal(template.get('source'))}: {_terminal(template.get('status'))}; effective={bool(template.get('effective'))}")
+    for skipped in coverage.get("skipped_sources", []):
+        lines.append(f"  • Skipped {_terminal(skipped.get('source'))}: {_terminal(skipped.get('reason'))}")
     lines.extend(["", thin_sep, f"Metadata ({len(parsed.metadata)}):"])
     if parsed.metadata:
         for key, value in parsed.metadata.items():
@@ -285,6 +302,13 @@ def render_html(result: ScanResult) -> str:
     by_severity = counts["by_severity"]
     assert isinstance(by_severity, dict)
     status = str(report["parser_status"])
+    coverage = report["template_analysis"]
+    template_panel = (
+        '<section class="panel"><h2>Template coverage</h2>'
+        f'<p><strong>Status: {_h(coverage.get("status", "not_run"))}</strong></p>'
+        '<p>Static indicators do not verify runtime exploitability, malicious intent or model authenticity.</p>'
+        f'<pre>{_h(coverage)}</pre></section>'
+    )
 
     metadata_rows = "".join(
         f"<tr><th scope=\"row\">{_h(key)}</th><td>{_html_optional(parsed.metadata_types.get(key))}</td>"
@@ -386,6 +410,7 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0; }}
 {_stat("Tensors", len(parsed.tensors))}{_stat("Metadata fields", len(parsed.metadata))}
 {_stat("Parser status", status)}{_stat("Findings", len(result.findings))}{facts}
 </div>
+{template_panel}
 <section class="panel"><h2>Findings</h2><div class="severity-strip">{severity_strip}</div>
 <div class="finding-grid">{findings or '<p class="subtle">No structural violations detected.</p>'}</div></section>
 <section class="panel"><h2>Parser issues</h2><div class="finding-grid">{parser_issues or '<p class="subtle">No parser issues.</p>'}</div></section>
@@ -398,3 +423,4 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0; }}
 </body>
 </html>
 """
+

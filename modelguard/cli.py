@@ -1,4 +1,4 @@
-"""Small first-review command-line presentation of Modules 1 and 2."""
+"""Command-line presentation of container and static template inspection."""
 
 from __future__ import annotations
 
@@ -11,18 +11,20 @@ from modelguard.scan import scan_file
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="modelguard", description="Static GGUF and safetensors structural inspection")
+    parser = argparse.ArgumentParser(prog="modelguard", description="Static GGUF, safetensors and chat-template inspection")
     commands = parser.add_subparsers(dest="command", required=True)
     scan = commands.add_parser("scan", help="inspect one model file without executing it")
     scan.add_argument("file", type=Path)
     scan.add_argument("--json", dest="json_path", type=Path, help="write machine-readable report")
     scan.add_argument("--html", dest="html_path", type=Path, help="write a self-contained review report")
+    scan.add_argument("--template-profile", choices=("auto", "gguf", "transformers", "processor"), default="auto",
+                      help="intended template loader (auto: embedded GGUF or Transformers tokenizer)")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = scan_file(args.file)
+    result = scan_file(args.file, template_profile=args.template_profile)
     print(render_terminal(result))
     try:
         if args.json_path:
@@ -36,7 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         print(f"Could not write report: {exc}")
         return 2
-    return 1 if any(f.severity in ("ERROR", "CRITICAL") for f in result.findings) else 0
+    coverage = result.parsed.extra.get("template_analysis", {})
+    return 1 if (any(f.severity in ("ERROR", "CRITICAL") for f in result.findings)
+                 or coverage.get("complete") is False) else 0
 
 
 if __name__ == "__main__":

@@ -1,10 +1,16 @@
-"""Canonical, pinned chat-template references for model supply chain comparison."""
+"""Format resemblance examples and separately identified upstream snapshots."""
 
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+
+from modelguard import limits
 
 
 @dataclass(slots=True)
@@ -17,7 +23,8 @@ class CanonicalReference:
     expected_roles: tuple[str, ...] = ("system", "user", "assistant")
 
 
-# Pinned, canonical references representing industry-standard template formats.
+# Historical API name retained for callers. These hand-written FORMAT EXAMPLES
+# have no upstream identity and are never used as evidence of authenticity.
 CANONICAL_REFERENCES: dict[str, CanonicalReference] = {
     "chatml": CanonicalReference(
         name="ChatML",
@@ -145,19 +152,41 @@ class ComparisonResult:
     evidence: dict[str, object] = field(default_factory=dict)
 
 
+@lru_cache(maxsize=1)
+def pinned_references() -> tuple[dict[str, object], ...]:
+    """Load packaged snapshots only after verifying their manifest digests."""
+    directory = Path(__file__).resolve().parents[1] / "data" / "templates"
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    result = []
+    for record in manifest["references"]:
+        filename = record["filename"]
+        if Path(filename).name != filename:
+            raise ValueError("Reference filename must stay within the packaged corpus")
+        raw = (directory / filename).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != record["sha256"]:
+            raise ValueError(f"Pinned reference digest mismatch: {filename}")
+        result.append({**record, "content": raw.decode("utf-8")})
+    return tuple(result)
+
+
 def compare_template_with_references(
     template_text: str,
     declared_architecture: str | None = None,
-    threshold: float = 0.70,
+    threshold: float = 0.90,
 ) -> ComparisonResult:
-    """Compare a template against pinned canonical references."""
+    """Report heuristic resemblance independently of exact snapshot equality."""
+    if len(template_text) > limits.MAX_TEMPLATE_BYTES:
+        return ComparisonResult(evidence={"status": "skipped", "reason": "template byte budget"})
+    raw = template_text.encode("utf-8", errors="replace")
+    if len(raw) > limits.MAX_TEMPLATE_BYTES:
+        return ComparisonResult(evidence={"status": "skipped", "reason": "template byte budget"})
     norm_input = _normalize(template_text)
     input_len = len(norm_input)
     arch = (declared_architecture or "").lower().strip()
 
     valid_refs_for_arch = [
         ref for ref in CANONICAL_REFERENCES.values()
-        if arch and any(arch == a or arch.startswith(a) or a.startswith(arch) for a in ref.supported_architectures)
+        if arch and arch in ref.supported_architectures
     ]
     expected_ref: CanonicalReference | None = valid_refs_for_arch[0] if valid_refs_for_arch else None
 
@@ -175,12 +204,9 @@ def compare_template_with_references(
             if length_ratio > _LENGTH_RATIO_CUTOFF:
                 continue
 
-        # Check delimiter presence bonus
-        has_all_delimiters = all(delim in template_text for delim in ref.key_delimiters)
+        # Delimiters are weak format hints. They never boost the similarity
+        # score or establish provenance, identity, or safety.
         ratio = difflib.SequenceMatcher(None, norm_input, norm_ref).ratio()
-        if has_all_delimiters:
-            # Boost score if all signature delimiters match exactly
-            ratio = max(ratio, 0.75 + (0.25 * ratio))
 
         if ratio > best_score:
             best_score = ratio
@@ -189,8 +215,8 @@ def compare_template_with_references(
     matched = best_match if best_score >= threshold else None
     divergence = False
 
-    if valid_refs_for_arch:
-        if matched is None or matched not in valid_refs_for_arch:
+    if valid_refs_for_arch and matched is not None:
+        if matched not in valid_refs_for_arch:
             divergence = True
 
     evidence: dict[str, object] = {
@@ -199,7 +225,15 @@ def compare_template_with_references(
         "threshold": threshold,
         "declared_architecture": declared_architecture,
         "expected_reference": expected_ref.name if expected_ref else None,
+        "comparison_kind": "format resemblance; not authentication",
+        "architecture_is_untrusted_metadata": True,
+        "exact_reference": None,
     }
+    digest = hashlib.sha256(raw).hexdigest()
+    for record in pinned_references():
+        if digest == record["sha256"] and template_text == record["content"]:
+            evidence["exact_reference"] = {key: value for key, value in record.items() if key != "content"}
+            break
 
     return ComparisonResult(
         matched_reference=matched,
@@ -208,3 +242,4 @@ def compare_template_with_references(
         architecture_divergence=divergence,
         evidence=evidence,
     )
+

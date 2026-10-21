@@ -275,7 +275,7 @@ def test_generation_prompt_notice() -> None:
     ct113 = [f for f in findings if f.id == "CT113"]
     assert len(ct113) == 1
     assert ct113[0].severity == "INFO"
-    assert ct113[0].category == "template_prompt_risk"
+    assert ct113[0].category == "template_compatibility"
 
 
 # ---------------------------------------------------------------------------
@@ -416,4 +416,5 @@ def test_scan_file_integration(tmp_path: Path) -> None:
     result = scan_file(test_file)
     assert any(f.id == "CT101" for f in result.findings)
     assert result.parsed.extra.get("chat_templates")
+
 
