@@ -71,7 +71,7 @@ If you want to show a malformed safetensors example too:
 .venv/bin/python -m pytest -q
 ```
 
-Expected local result for this milestone: **50 passed**. Conclude: “The first review covers static parsing and structural anomaly detection only. Template analysis, fuzzing, and the final verdict/reporting module come later.”
+This document describes the historical Module 1/2 review. Use pytest's current output for the test count. Current branches also implement Module 3 static template analysis; follow `docs/module3_demo.md` for that demonstration. Parser fuzzing and final lifecycle verdict reporting remain future work.
 
 ## Prepared artifacts
 

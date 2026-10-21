@@ -23,3 +23,17 @@ jobs:
         run: python -m pip install -e ".[test]"
       - name: Run full suite
         run: python -m pytest -q
+      - name: Evaluate independent template fixtures
+        run: python -m modelguard.evaluate_templates
+      - name: Build wheel and check packaged references
+        run: |
+          python -m pip wheel . --no-deps --wheel-dir dist
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          wheel = next(Path('dist').glob('modelguard-*.whl'))
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              assert 'modelguard/data/templates/manifest.json' in names
+              assert sum(name.endswith('.jinja') for name in names) == 5
+          PY
