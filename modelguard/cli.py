@@ -15,6 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     scan = commands.add_parser("scan", help="inspect one model file without executing it")
     scan.add_argument("file", type=Path)
+    scan.add_argument("--template-only", "--chat-template-only", action="store_true",
+                      help="inspect chat templates only (parse the container, skip structural analysis)")
     scan.add_argument("--json", dest="json_path", type=Path, help="write machine-readable report")
     scan.add_argument("--html", dest="html_path", type=Path, help="write a self-contained review report")
     scan.add_argument("--template-profile", choices=("auto", "gguf", "transformers", "processor"), default="auto",
@@ -24,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = scan_file(args.file, template_profile=args.template_profile)
+    result = scan_file(args.file, template_profile=args.template_profile, template_only=args.template_only)
     print(render_terminal(result))
     try:
         if args.json_path:

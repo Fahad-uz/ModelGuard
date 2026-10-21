@@ -18,14 +18,21 @@ python3 -m venv .venv
 .venv/bin/python -m modelguard scan path/to/model.safetensors \
   --json report.json \
   --html report.html
+.venv/bin/python -m modelguard scan path/to/model.gguf --template-only
 .venv/bin/python demo_template.py
 .venv/bin/python demo_template.py path/to/model.gguf
 .venv/bin/python -m pytest -q
 .venv/bin/python -m modelguard.evaluate_templates
 ```
 
-`modelguard scan` runs all three modules. The demo's file mode runs parsing and
-Module 3 only. Exit **0** means no ERROR/CRITICAL findings and no incomplete
+`modelguard scan` parses the bounded container header once, then runs structural
+analysis and chat-template analysis concurrently. Their findings are combined in
+a stable order. `--template-only` (alias `--chat-template-only`) runs parsing and
+chat-template analysis, skipping the structural analyser. It supports the same
+loader profiles and JSON/HTML exports; reports explicitly show the selected mode
+and whether structural analysis ran. Parser errors and warnings remain visible
+in both modes. The demo's file mode also runs parsing and Module 3 only.
+Exit **0** means no ERROR/CRITICAL findings and no incomplete
 requested analysis; **1** means such findings or incomplete template coverage;
 **2** means a report could not be written. Warnings require review. An absent
 template is explicitly reported and is not evidence of safety.

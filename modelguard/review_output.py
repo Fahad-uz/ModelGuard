@@ -73,6 +73,8 @@ def report_dict(result: ScanResult) -> dict[str, object]:
         "WARNING" if parsed.parser_warnings else
         "OK"
     )
+    scope = parsed.extra.get("analysis_scope", {})
+    template_only = scope.get("mode") == "template-only"
     return {
         "file": {
             "path": str(parsed.path),
@@ -83,7 +85,12 @@ def report_dict(result: ScanResult) -> dict[str, object]:
         "parser_status": parser_status,
         "template_analysis": _jsonable(parsed.extra.get("template_analysis", {"status": "not_run", "complete": False})),
         "analysis_scope": {"runtime_verified": False, "model_identity_authenticated": False,
-                           "description": "Static container and template indicators; no inference or exploit validation"},
+                           "mode": scope.get("mode", "unspecified"),
+                           "execution": scope.get("execution", "unspecified"),
+                           "structure_analysis": scope.get("structure_analysis", "not_recorded"),
+                           "description": ("Static chat-template indicators; container parsing required; structural analysis not requested"
+                                           if template_only else
+                                           "Static container and template indicators; no inference or exploit validation")},
         "counts": {
             "metadata": len(parsed.metadata),
             "tensors": len(parsed.tensors),
@@ -149,6 +156,8 @@ def render_terminal(result: ScanResult) -> str:
         verdict = "NO ERROR-LEVEL FINDINGS (No safety or authenticity guarantee)"
 
     coverage = report["template_analysis"]
+    scope = report["analysis_scope"]
+    template_only = scope["mode"] == "template-only"
     if not coverage.get("complete"):
         verdict += " · TEMPLATE ANALYSIS INCOMPLETE"
 
@@ -159,12 +168,16 @@ def render_terminal(result: ScanResult) -> str:
         "ModelGuard review",
         "=" * 17,
         sep,
-        "  MODELGUARD SECURITY & STRUCTURAL INSPECTION REPORT",
+        ("  MODELGUARD CHAT-TEMPLATE INSPECTION REPORT" if template_only else
+         "  MODELGUARD SECURITY & STRUCTURAL INSPECTION REPORT"),
         sep,
         f"File: {_terminal(parsed.path)}",
         f"Format: {_terminal(parsed.format)}" + (f" (v{parsed.format_version})" if parsed.format_version else ""),
         f"Size: {parsed.file_size:,} bytes",
         f"Parser: {report['parser_status']} ({counts['parser_errors']} errors, {counts['parser_warnings']} warnings)",
+        f"Scan mode: {_terminal(scope['mode'])}",
+        f"Analysis execution: {_terminal(scope['execution'])}",
+        f"Structure analysis: {_terminal(scope['structure_analysis'])}",
         f"Verdict: {verdict}",
         f"Template analysis: {_terminal(coverage.get('status', 'not_run'))}",
         f"Findings: {counts['findings']}",
@@ -244,7 +257,8 @@ def render_terminal(result: ScanResult) -> str:
                 lines.append(f"  │   Remediation: {_terminal(finding.remediation)}")
             lines.append("  └──")
     else:
-        lines.append("  No structural violations detected.")
+        lines.append("  No chat-template findings detected." if template_only else
+                     "  No structural violations detected.")
     lines.append(sep)
     return "\n".join(lines) + "\n"
 
@@ -302,6 +316,9 @@ def render_html(result: ScanResult) -> str:
     by_severity = counts["by_severity"]
     assert isinstance(by_severity, dict)
     status = str(report["parser_status"])
+    scope = report["analysis_scope"]
+    empty_findings = ("No chat-template findings detected." if scope["mode"] == "template-only" else
+                      "No structural violations detected.")
     coverage = report["template_analysis"]
     template_panel = (
         '<section class="panel"><h2>Template coverage</h2>'
@@ -405,6 +422,9 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0; }}
 <main>
 <header><p class="eyebrow">Static model inspection</p><h1>ModelGuard review</h1>
 <p><strong>{_h(parsed.path.name)}</strong> · {_h(parsed.path)}</p></header>
+<section class="panel"><h2>Analysis scope</h2>
+<p>Scan mode: <strong>{_h(scope['mode'])}</strong> · Analysis execution: {_h(scope['execution'])}</p>
+<p>Structure analysis: {_h(scope['structure_analysis'])}</p><p>{_h(scope['description'])}</p></section>
 <div class="summary">
 {_stat("Format", parsed.format)}{_stat("File size", f"{parsed.file_size:,} bytes")}
 {_stat("Tensors", len(parsed.tensors))}{_stat("Metadata fields", len(parsed.metadata))}
@@ -412,7 +432,7 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0; }}
 </div>
 {template_panel}
 <section class="panel"><h2>Findings</h2><div class="severity-strip">{severity_strip}</div>
-<div class="finding-grid">{findings or '<p class="subtle">No structural violations detected.</p>'}</div></section>
+<div class="finding-grid">{findings or '<p class="subtle">' + _h(empty_findings) + '</p>'}</div></section>
 <section class="panel"><h2>Parser issues</h2><div class="finding-grid">{parser_issues or '<p class="subtle">No parser issues.</p>'}</div></section>
 <section class="panel"><h2>Metadata</h2><div class="table-wrap"><table><thead><tr><th>Key</th><th>Type</th><th>Value</th></tr></thead>
 <tbody>{metadata_rows or '<tr><td colspan="3" class="subtle">No metadata.</td></tr>'}</tbody></table></div></section>

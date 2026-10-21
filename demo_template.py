@@ -13,6 +13,8 @@ from modelguard.review_output import render_terminal
 
 
 def present(model: ParsedModel) -> int:
+    model.extra["analysis_scope"] = {"mode": "template-only", "execution": "single",
+                                     "structure_analysis": "not_requested"}
     findings = TemplateAnalyzer().analyze(model)
     print(render_terminal(ScanResult(model, findings)))
     coverage = model.extra["template_analysis"]
