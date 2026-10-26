@@ -1,0 +1,32 @@
+{
+  "references": [
+    {
+      "name": "Qwen-Qwen3-0.6B.jinja",
+      "sha": "699ff8df401fe4788525e9c1f9b86a99eadd6230",
+      "path": "models/templates/Qwen-Qwen3-0.6B.jinja",
+      "download_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/Qwen-Qwen3-0.6B.jinja",
+      "local_path": "tests/fixtures/held_out_templates/Qwen-Qwen3-0.6B.jinja",
+      "repository": "ggml-org/llama.cpp",
+      "revision": "493253fe5a5af7e800b3c92a2452b5684a99e961",
+      "model_id": "Qwen/Qwen3-0.6B",
+      "source_url": "https://github.com/ggml-org/llama.cpp/blob/493253fe5a5af7e800b3c92a2452b5684a99e961/models/templates/Qwen-Qwen3-0.6B.jinja",
+      "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+      "snapshot_origin": "llama.cpp maintained template fixture; model publisher identity is not authenticated",
+      "filename": "Qwen-Qwen3-0.6B.jinja"
+    },
+    {
+      "name": "Qwen-QwQ-32B.jinja",
+      "sha": "ce314a039f688fcafed91a550fe7af82b9c84387",
+      "path": "models/templates/Qwen-QwQ-32B.jinja",
+      "download_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/Qwen-QwQ-32B.jinja",
+      "local_path": "tests/fixtures/held_out_templates/Qwen-QwQ-32B.jinja",
+      "repository": "ggml-org/llama.cpp",
+      "revision": "493253fe5a5af7e800b3c92a2452b5684a99e961",
+      "model_id": "Qwen/QwQ-32B",
+      "source_url": "https://github.com/ggml-org/llama.cpp/blob/493253fe5a5af7e800b3c92a2452b5684a99e961/models/templates/Qwen-QwQ-32B.jinja",
+      "sha256": "5ed15374ce53e19a7798710736a2c9fe41c79f7385e8421a2080d6575a80ef1b",
+      "snapshot_origin": "llama.cpp maintained template fixture; model publisher identity is not authenticated",
+      "filename": "Qwen-QwQ-32B.jinja"
+    }
+  ]
+}

@@ -73,6 +73,8 @@ def report_dict(result: ScanResult) -> dict[str, object]:
         "WARNING" if parsed.parser_warnings else
         "OK"
     )
+    scope = parsed.extra.get("analysis_scope", {})
+    template_only = scope.get("mode") == "template-only"
     return {
         "file": {
             "path": str(parsed.path),
@@ -81,6 +83,14 @@ def report_dict(result: ScanResult) -> dict[str, object]:
             "format": parsed.format,
         },
         "parser_status": parser_status,
+        "template_analysis": _jsonable(parsed.extra.get("template_analysis", {"status": "not_run", "complete": False})),
+        "analysis_scope": {"runtime_verified": False, "model_identity_authenticated": False,
+                           "mode": scope.get("mode", "unspecified"),
+                           "execution": scope.get("execution", "unspecified"),
+                           "structure_analysis": scope.get("structure_analysis", "not_recorded"),
+                           "description": ("Static chat-template indicators; container parsing required; structural analysis not requested"
+                                           if template_only else
+                                           "Static container and template indicators; no inference or exploit validation")},
         "counts": {
             "metadata": len(parsed.metadata),
             "tensors": len(parsed.tensors),
@@ -120,19 +130,60 @@ def _terminal(value: object) -> str:
 
 
 def render_terminal(result: ScanResult) -> str:
-    """Produce a readable, control-character-safe terminal report."""
+    """Produce an organized, viewer-friendly, control-character-safe terminal report."""
     report = report_dict(result)
     parsed = result.parsed
     counts = report["counts"]
     assert isinstance(counts, dict)
+    by_sev = counts.get("by_severity", {})
+
+    crit_count = by_sev.get("CRITICAL", 0)
+    err_count = by_sev.get("ERROR", 0)
+    warn_count = by_sev.get("WARNING", 0)
+    info_count = by_sev.get("INFO", 0)
+
+    if crit_count > 0:
+        verdict = "STATIC CODE-RISK INDICATORS (Loader exploitability not verified)"
+    elif err_count > 0:
+        verdict = "ERRORS REPORTED (Review findings and analysis coverage)"
+    elif warn_count > 0:
+        verdict = "WARNING (Anomalies or prompt divergences detected)"
+    elif report["parser_status"] == "ERROR":
+        verdict = "PARSER FAILED (Corrupted container header)"
+    elif report["parser_status"] == "WARNING":
+        verdict = "PARSER WARNING (Non-standard container layout)"
+    else:
+        verdict = "NO ERROR-LEVEL FINDINGS (No safety or authenticity guarantee)"
+
+    coverage = report["template_analysis"]
+    scope = report["analysis_scope"]
+    template_only = scope["mode"] == "template-only"
+    if not coverage.get("complete"):
+        verdict += " · TEMPLATE ANALYSIS INCOMPLETE"
+
+    sep = "━" * 72
+    thin_sep = "─" * 72
+
     lines = [
         "ModelGuard review",
         "=" * 17,
+        sep,
+        ("  MODELGUARD CHAT-TEMPLATE INSPECTION REPORT" if template_only else
+         "  MODELGUARD SECURITY & STRUCTURAL INSPECTION REPORT"),
+        sep,
         f"File: {_terminal(parsed.path)}",
-        f"Format: {_terminal(parsed.format)}",
+        f"Format: {_terminal(parsed.format)}" + (f" (v{parsed.format_version})" if parsed.format_version else ""),
         f"Size: {parsed.file_size:,} bytes",
         f"Parser: {report['parser_status']} ({counts['parser_errors']} errors, {counts['parser_warnings']} warnings)",
+        f"Scan mode: {_terminal(scope['mode'])}",
+        f"Analysis execution: {_terminal(scope['execution'])}",
+        f"Structure analysis: {_terminal(scope['structure_analysis'])}",
+        f"Verdict: {verdict}",
+        f"Template analysis: {_terminal(coverage.get('status', 'not_run'))}",
         f"Findings: {counts['findings']}",
+        f"Breakdown: [CRITICAL: {crit_count}]  [ERROR: {err_count}]  [WARNING: {warn_count}]  [INFO: {info_count}]",
+        thin_sep,
+        "Container Facts:",
     ]
     for label, value in (
         ("Format version", parsed.format_version),
@@ -142,18 +193,32 @@ def render_terminal(result: ScanResult) -> str:
         ("Declared metadata", parsed.declared_metadata_count),
     ):
         if value is not None:
-            lines.append(f"{label}: {_terminal(value)}")
+            lines.append(f"  • {label}: {_terminal(value)}")
 
-    lines.extend(["", f"Metadata ({len(parsed.metadata)}):"])
+    lines.extend(["", thin_sep, "Template coverage:",
+                  f"  • Status: {_terminal(coverage.get('status', 'not_run'))}",
+                  f"  • Loader profile: {_terminal(coverage.get('loader_profile', 'unknown'))}",
+                  f"  • Inspected templates: {_terminal(coverage.get('templates_inspected', 0))}",
+                  "  • Static inspection does not verify runtime exploitability or model authenticity."])
+    for template in parsed.extra.get("chat_templates", []):
+        lines.append(f"  • {_terminal(template.get('source'))}: {_terminal(template.get('status'))}; effective={bool(template.get('effective'))}")
+    for skipped in coverage.get("skipped_sources", []):
+        lines.append(f"  • Skipped {_terminal(skipped.get('source'))}: {_terminal(skipped.get('reason'))}")
+    lines.extend(["", thin_sep, f"Metadata ({len(parsed.metadata)}):"])
     if parsed.metadata:
         for key, value in parsed.metadata.items():
             type_name = parsed.metadata_types.get(key)
             suffix = f" [{_terminal(type_name)}]" if type_name else ""
-            lines.append(f"  {_terminal(key)}{suffix}: {_terminal(value)}")
+            val_str = str(value)
+            if len(val_str) > 160:
+                preview = _terminal(val_str[:140]) + f"... ({len(val_str)} chars)"
+                lines.append(f"  • {_terminal(key)}{suffix}: {preview}")
+            else:
+                lines.append(f"  • {_terminal(key)}{suffix}: {_terminal(value)}")
     else:
         lines.append("  None")
 
-    lines.extend(["", f"Tensors ({len(parsed.tensors)}):"])
+    lines.extend(["", thin_sep, f"Tensors ({len(parsed.tensors)}):"])
     if parsed.tensors:
         for tensor in parsed.tensors:
             fields = [f"dtype={_terminal(tensor.dtype)}", f"shape={_terminal(tensor.shape)}",
@@ -162,35 +227,39 @@ def render_terminal(result: ScanResult) -> str:
                 fields.append(f"ggml_type={_terminal(tensor.ggml_type)}")
             if tensor.descriptor_offset is not None:
                 fields.append(f"descriptor_offset={_terminal(tensor.descriptor_offset)}")
-            lines.append(f"  {_terminal(tensor.name)}: " + ", ".join(fields))
+            lines.append(f"  • {_terminal(tensor.name)}: " + ", ".join(fields))
     else:
         lines.append("  None")
 
     if parsed.parser_errors or parsed.parser_warnings:
-        lines.extend(["", "Parser issues:"])
+        lines.extend(["", thin_sep, "Parser issues:"])
         for severity, issues in (("ERROR", parsed.parser_errors), ("WARNING", parsed.parser_warnings)):
             for issue in issues:
-                lines.append(f"  [{severity}] {_terminal(issue.code)}: {_terminal(issue.message)}")
+                lines.append(f"\n  ┌── [{severity}] {_terminal(issue.code)}: {_terminal(issue.message)}")
                 if issue.field is not None:
-                    lines.append(f"    Field: {_terminal(issue.field)}")
+                    lines.append(f"  │   Field:    {_terminal(issue.field)}")
                 if issue.evidence is not None:
-                    lines.append(f"    Evidence: {_terminal(issue.evidence)}")
+                    lines.append(f"  │   Evidence: {_terminal(issue.evidence)}")
+                lines.append("  └──")
 
-    lines.extend(["", f"Findings ({len(result.findings)}):"])
+    lines.extend(["", thin_sep, f"Findings ({len(result.findings)}):", thin_sep])
     if result.findings:
         for finding in result.findings:
+            sev_tag = f"[{_terminal(finding.severity)}] {_terminal(finding.id)}"
             lines.append(
-                f"  [{_terminal(finding.severity)}] {_terminal(finding.id)} "
-                f"({_terminal(finding.category)}): {_terminal(finding.message)}"
+                f"\n  ┌── {sev_tag} ({_terminal(finding.category)}): {_terminal(finding.message)}"
             )
             if finding.field is not None:
-                lines.append(f"    Field: {_terminal(finding.field)}")
+                lines.append(f"  │   Field:       {_terminal(finding.field)}")
             if finding.evidence is not None:
-                lines.append(f"    Evidence: {_terminal(finding.evidence)}")
+                lines.append(f"  │   Evidence:    {_terminal(finding.evidence)}")
             if finding.remediation is not None:
-                lines.append(f"    Remediation: {_terminal(finding.remediation)}")
+                lines.append(f"  │   Remediation: {_terminal(finding.remediation)}")
+            lines.append("  └──")
     else:
-        lines.append("  No structural violations detected.")
+        lines.append("  No chat-template findings detected." if template_only else
+                     "  No structural violations detected.")
+    lines.append(sep)
     return "\n".join(lines) + "\n"
 
 
@@ -212,8 +281,9 @@ def _issue_html(issue: ParserIssue, severity: str) -> str:
         details.append(f"<dt>Field</dt><dd>{_h(issue.field)}</dd>")
     if issue.evidence is not None:
         details.append(f"<dt>Evidence</dt><dd><code>{_h(issue.evidence)}</code></dd>")
+    sev_cls = html.escape(severity.lower(), quote=True)
     return (
-        f'<article class="finding"><div class="finding-head"><span class="badge {severity.lower()}">'
+        f'<article class="finding {sev_cls}"><div class="finding-head"><span class="badge {sev_cls}">'
         f'{html.escape(severity)}</span><strong>{_h(issue.code)}</strong></div>'
         f'<p>{_h(issue.message)}</p><dl>{"".join(details)}</dl></article>'
     )
@@ -228,9 +298,10 @@ def _finding_html(finding: Finding) -> str:
     if finding.remediation is not None:
         details.append(f"<dt>Remediation</dt><dd>{_h(finding.remediation)}</dd>")
     severity = _h(finding.severity)
+    sev_cls = html.escape(finding.severity.lower(), quote=True)
     return (
-        f'<article class="finding"><div class="finding-head">'
-        f'<span class="badge {html.escape(finding.severity.lower(), quote=True)}">{severity}</span>'
+        f'<article class="finding {sev_cls}"><div class="finding-head">'
+        f'<span class="badge {sev_cls}">{severity}</span>'
         f'<strong>{_h(finding.id)}</strong></div><p>{_h(finding.message)}</p>'
         f'<dl>{"".join(details)}</dl></article>'
     )
@@ -245,6 +316,16 @@ def render_html(result: ScanResult) -> str:
     by_severity = counts["by_severity"]
     assert isinstance(by_severity, dict)
     status = str(report["parser_status"])
+    scope = report["analysis_scope"]
+    empty_findings = ("No chat-template findings detected." if scope["mode"] == "template-only" else
+                      "No structural violations detected.")
+    coverage = report["template_analysis"]
+    template_panel = (
+        '<section class="panel"><h2>Template coverage</h2>'
+        f'<p><strong>Status: {_h(coverage.get("status", "not_run"))}</strong></p>'
+        '<p>Static indicators do not verify runtime exploitability, malicious intent or model authenticity.</p>'
+        f'<pre>{_h(coverage)}</pre></section>'
+    )
 
     metadata_rows = "".join(
         f"<tr><th scope=\"row\">{_h(key)}</th><td>{_html_optional(parsed.metadata_types.get(key))}</td>"
@@ -311,7 +392,11 @@ h2 {{ margin: 0 0 18px; font-size: 1.16rem; letter-spacing: -.02em; }}
 .severity-strip {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 19px; }}
 .severity-count {{ background: #f1f5f9; border-radius: 999px; padding: 7px 12px; font-size: .82rem; }}
 .finding-grid {{ display: grid; gap: 12px; }}
-.finding {{ border: 1px solid #dfe6ee; border-left: 4px solid #6b8297; border-radius: 10px; padding: 16px 18px; background: #fff; }}
+.finding {{ border: 1px solid #dfe6ee; border-left: 5px solid #6b8297; border-radius: 10px; padding: 16px 18px; background: #fff; box-shadow: 0 2px 8px #10284308; }}
+.finding.critical {{ border-left-color: #dc2626; background: #fffafb; }}
+.finding.error {{ border-left-color: #ea580c; background: #fffcf9; }}
+.finding.warning {{ border-left-color: #d97706; background: #fffdf7; }}
+.finding.info {{ border-left-color: #2563eb; background: #f8fbff; }}
 .finding-head {{ display: flex; align-items: center; gap: 11px; }}
 .finding p {{ margin: 12px 0 8px; line-height: 1.55; }}
 .finding dl {{ display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 13px; margin: 0; font-size: .88rem; }}
@@ -337,13 +422,17 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0; }}
 <main>
 <header><p class="eyebrow">Static model inspection</p><h1>ModelGuard review</h1>
 <p><strong>{_h(parsed.path.name)}</strong> · {_h(parsed.path)}</p></header>
+<section class="panel"><h2>Analysis scope</h2>
+<p>Scan mode: <strong>{_h(scope['mode'])}</strong> · Analysis execution: {_h(scope['execution'])}</p>
+<p>Structure analysis: {_h(scope['structure_analysis'])}</p><p>{_h(scope['description'])}</p></section>
 <div class="summary">
 {_stat("Format", parsed.format)}{_stat("File size", f"{parsed.file_size:,} bytes")}
 {_stat("Tensors", len(parsed.tensors))}{_stat("Metadata fields", len(parsed.metadata))}
 {_stat("Parser status", status)}{_stat("Findings", len(result.findings))}{facts}
 </div>
+{template_panel}
 <section class="panel"><h2>Findings</h2><div class="severity-strip">{severity_strip}</div>
-<div class="finding-grid">{findings or '<p class="subtle">No structural violations detected.</p>'}</div></section>
+<div class="finding-grid">{findings or '<p class="subtle">' + _h(empty_findings) + '</p>'}</div></section>
 <section class="panel"><h2>Parser issues</h2><div class="finding-grid">{parser_issues or '<p class="subtle">No parser issues.</p>'}</div></section>
 <section class="panel"><h2>Metadata</h2><div class="table-wrap"><table><thead><tr><th>Key</th><th>Type</th><th>Value</th></tr></thead>
 <tbody>{metadata_rows or '<tr><td colspan="3" class="subtle">No metadata.</td></tr>'}</tbody></table></div></section>
@@ -354,3 +443,4 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0; }}
 </body>
 </html>
 """
+

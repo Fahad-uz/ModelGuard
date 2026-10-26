@@ -1,0 +1,74 @@
+{
+  "references": [
+    {
+      "name": "Qwen-Qwen2.5-7B-Instruct.jinja",
+      "sha": "bdf7919a96cfe43d50914a007b9c0877bd0ec27e",
+      "path": "models/templates/Qwen-Qwen2.5-7B-Instruct.jinja",
+      "download_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/Qwen-Qwen2.5-7B-Instruct.jinja",
+      "local_path": "modelguard/data/templates/Qwen-Qwen2.5-7B-Instruct.jinja",
+      "repository": "ggml-org/llama.cpp",
+      "revision": "493253fe5a5af7e800b3c92a2452b5684a99e961",
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "source_url": "https://github.com/ggml-org/llama.cpp/blob/493253fe5a5af7e800b3c92a2452b5684a99e961/models/templates/Qwen-Qwen2.5-7B-Instruct.jinja",
+      "sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+      "snapshot_origin": "llama.cpp maintained template fixture; model publisher identity is not authenticated",
+      "filename": "Qwen-Qwen2.5-7B-Instruct.jinja"
+    },
+    {
+      "name": "meta-llama-Llama-3.1-8B-Instruct.jinja",
+      "sha": "33089ace1be88f22a10fe861ad49718d5d886090",
+      "path": "models/templates/meta-llama-Llama-3.1-8B-Instruct.jinja",
+      "download_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/meta-llama-Llama-3.1-8B-Instruct.jinja",
+      "local_path": "modelguard/data/templates/meta-llama-Llama-3.1-8B-Instruct.jinja",
+      "repository": "ggml-org/llama.cpp",
+      "revision": "493253fe5a5af7e800b3c92a2452b5684a99e961",
+      "model_id": "meta-llama/Llama-3.1-8B-Instruct",
+      "source_url": "https://github.com/ggml-org/llama.cpp/blob/493253fe5a5af7e800b3c92a2452b5684a99e961/models/templates/meta-llama-Llama-3.1-8B-Instruct.jinja",
+      "sha256": "e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65",
+      "snapshot_origin": "llama.cpp maintained template fixture; model publisher identity is not authenticated",
+      "filename": "meta-llama-Llama-3.1-8B-Instruct.jinja"
+    },
+    {
+      "name": "google-gemma-2-2b-it.jinja",
+      "sha": "923ec253c8dbefbb41cf084db7251df41d000f6d",
+      "path": "models/templates/google-gemma-2-2b-it.jinja",
+      "download_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/google-gemma-2-2b-it.jinja",
+      "local_path": "modelguard/data/templates/google-gemma-2-2b-it.jinja",
+      "repository": "ggml-org/llama.cpp",
+      "revision": "493253fe5a5af7e800b3c92a2452b5684a99e961",
+      "model_id": "google/gemma-2-2b-it",
+      "source_url": "https://github.com/ggml-org/llama.cpp/blob/493253fe5a5af7e800b3c92a2452b5684a99e961/models/templates/google-gemma-2-2b-it.jinja",
+      "sha256": "ecd6ae513fe103f0eb62e8ab5bfa8d0fe45c1074fa398b089c93a7e70c15cfd6",
+      "snapshot_origin": "llama.cpp maintained template fixture; model publisher identity is not authenticated",
+      "filename": "google-gemma-2-2b-it.jinja"
+    },
+    {
+      "name": "microsoft-Phi-3.5-mini-instruct.jinja",
+      "sha": "d1533d1526b2e42fccd99477a7274dc20b7a189b",
+      "path": "models/templates/microsoft-Phi-3.5-mini-instruct.jinja",
+      "download_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/microsoft-Phi-3.5-mini-instruct.jinja",
+      "local_path": "modelguard/data/templates/microsoft-Phi-3.5-mini-instruct.jinja",
+      "repository": "ggml-org/llama.cpp",
+      "revision": "493253fe5a5af7e800b3c92a2452b5684a99e961",
+      "model_id": "microsoft/Phi-3.5-mini-instruct",
+      "source_url": "https://github.com/ggml-org/llama.cpp/blob/493253fe5a5af7e800b3c92a2452b5684a99e961/models/templates/microsoft-Phi-3.5-mini-instruct.jinja",
+      "sha256": "78d976a442bcde2f0be15aafbb8e3050e1104f86732266f68403251b89982a90",
+      "snapshot_origin": "llama.cpp maintained template fixture; model publisher identity is not authenticated",
+      "filename": "microsoft-Phi-3.5-mini-instruct.jinja"
+    },
+    {
+      "name": "mistralai-Mistral-Nemo-Instruct-2407.jinja",
+      "sha": "9c21a3f13ebf55994c64c93c9ae5361580570651",
+      "path": "models/templates/mistralai-Mistral-Nemo-Instruct-2407.jinja",
+      "download_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/mistralai-Mistral-Nemo-Instruct-2407.jinja",
+      "local_path": "modelguard/data/templates/mistralai-Mistral-Nemo-Instruct-2407.jinja",
+      "repository": "ggml-org/llama.cpp",
+      "revision": "493253fe5a5af7e800b3c92a2452b5684a99e961",
+      "model_id": "mistralai/Mistral-Nemo-Instruct-2407",
+      "source_url": "https://github.com/ggml-org/llama.cpp/blob/493253fe5a5af7e800b3c92a2452b5684a99e961/models/templates/mistralai-Mistral-Nemo-Instruct-2407.jinja",
+      "sha256": "e4676cb56dffea7782fd3e2b577cfaf1e123537e6ef49b3ec7caa6c095c62272",
+      "snapshot_origin": "llama.cpp maintained template fixture; model publisher identity is not authenticated",
+      "filename": "mistralai-Mistral-Nemo-Instruct-2407.jinja"
+    }
+  ]
+}
